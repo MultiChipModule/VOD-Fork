@@ -29,7 +29,8 @@ namespace Jellyfin.Plugin.VOD.Services
         YtDlpService ytDlp,
         CaptionCache cache,
         ILogger<CaptionPlaybackFilter> logger,
-        StreamDescriber? describer = null) : IDisposable
+        StreamDescriber? describer = null,
+        IUserDataManager? userData = null) : IDisposable
     {
         private readonly PlaylistCache _missingTracks = new();
         private readonly SemaphoreSlim[] _locks = Enumerable.Range(0, 32).Select(_ => new SemaphoreSlim(1)).ToArray();
@@ -248,6 +249,18 @@ namespace Jellyfin.Plugin.VOD.Services
             stream.Type == MediaStreamType.Subtitle && stream.Language is { } language
             && YouTubeCaption.IsEnglish(language);
 
+        internal bool CanOptimizeSelection(Guid itemId, Guid userId)
+        {
+            if (userData is null || users.GetUserById(userId) is not { } user
+                || library.GetItemById<BaseItem>(itemId, user) is not Video item
+                || item.PrimaryVersionId.HasValue)
+            {
+                return false;
+            }
+
+            return !item.GetAllVersions().Any(version => userData.GetUserData(user, version)?.PlaybackPositionTicks > 0);
+        }
+
         internal bool IsVisibleYouTubeVideo(Guid itemId, Guid userId)
         {
             return users.GetUserById(userId) is { } user
@@ -310,15 +323,20 @@ namespace Jellyfin.Plugin.VOD.Services
                 if (IsPlaybackInfo(controller, action.ActionName)
                     && authenticated && context.ActionArguments.TryGetValue("itemId", out var value) && value is Guid itemId)
                 {
-                    var prepared = await http.RequestServices.GetRequiredService<CaptionPlaybackFilter>()
-                        .TryPrepareAsync(itemId, userId, config, http.RequestAborted).ConfigureAwait(false);
+                    var captions = http.RequestServices.GetRequiredService<CaptionPlaybackFilter>();
+                    var prepared = await captions.TryPrepareAsync(itemId, userId, config, http.RequestAborted).ConfigureAwait(false);
                     var executed = await next().ConfigureAwait(false);
+                    var info = (executed.Result as ObjectResult)?.Value as PlaybackInfoResponse;
+                    if (prepared && info?.MediaSources is { Count: > 1 })
+                    {
+                        TryPreferOriginal(context, action.ActionName, captions, info, itemId, userId, config.EnablePlaybackDiagnostics);
+                    }
+
                     if (prepared && config.EnablePlaybackDiagnostics)
                     {
                         var logger = http.RequestServices.GetRequiredService<ILogger<CaptionPlaybackDispatch>>();
                         var client = ClientFamily(http.User.FindFirst("Jellyfin-Client")?.Value,
                             http.Request.Headers.UserAgent.ToString());
-                        var info = (executed.Result as ObjectResult)?.Value as PlaybackInfoResponse;
                         foreach (var sourceInfo in info?.MediaSources ?? [])
                         {
                             var audioIndex = sourceInfo.DefaultAudioStreamIndex;
@@ -362,6 +380,84 @@ namespace Jellyfin.Plugin.VOD.Services
 
             await next().ConfigureAwait(false);
         }
+
+        private static void TryPreferOriginal(ActionExecutingContext context, string action, CaptionPlaybackFilter captions,
+            PlaybackInfoResponse info, Guid itemId, Guid userId, bool diagnostics)
+        {
+            try
+            {
+                if (!IsAutomaticSelection(action, context.ActionArguments) || !captions.CanOptimizeSelection(itemId, userId))
+                {
+                    return;
+                }
+
+                var bitrate = RequestValue(context.ActionArguments, "maxStreamingBitrate", "MaxStreamingBitrate") as int?;
+                var ordered = info.MediaSources.ToArray();
+                if (YouTubePlaybackSelection.PreferCopy(ordered, bitrate) is not { } selected)
+                {
+                    return;
+                }
+
+                info.MediaSources = ordered;
+                if (diagnostics)
+                {
+                    var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<CaptionPlaybackDispatch>>();
+                    var video = selected.VideoStream;
+                    var audio = selected.GetDefaultAudioStream(selected.DefaultAudioStreamIndex);
+                    LogSourceSelected(logger, selected.Id, video?.Height, video?.ReferenceFrameRate,
+                        video?.Codec, audio?.Codec, YouTubePlaybackSelection.Classify(selected).ToString());
+                }
+            }
+#pragma warning disable CA1031 // The native PlaybackInfo remains usable if the preference cannot be applied.
+            catch (Exception ex) when (ex is not OperationCanceledException)
+#pragma warning restore CA1031
+            {
+                if (diagnostics)
+                {
+                    LogSelectionUnavailable(context.HttpContext.RequestServices.GetRequiredService<ILogger<CaptionPlaybackDispatch>>(),
+                        ex.GetType().Name);
+                }
+            }
+        }
+
+        [LoggerMessage(EventId = 6, Level = LogLevel.Debug,
+            Message = "VOD kept native source order because playback preference could not be applied ({Reason})")]
+        private static partial void LogSelectionUnavailable(ILogger logger, string reason);
+
+        internal static bool IsAutomaticSelection(string action, IDictionary<string, object?> arguments)
+        {
+            // The DTO belongs to Jellyfin.Api. Read only the established public contract so the
+            // plugin still binds against its existing Controller ABI without loading Jellyfin.Api.
+            if (action != "GetPostedPlaybackInfo"
+                || (arguments.TryGetValue("playbackInfoDto", out var body) && body is not null
+                    && body.GetType().FullName != "Jellyfin.Api.Models.MediaInfoDtos.PlaybackInfoDto"))
+            {
+                return false;
+            }
+
+            return RequestValue(arguments, "mediaSourceId", "MediaSourceId") is not string { Length: > 0 }
+                && RequestValue(arguments, "liveStreamId", "LiveStreamId") is not string { Length: > 0 }
+                && RequestValue(arguments, "startTimeTicks", "StartTimeTicks") is null or 0L or 0
+                && RequestValue(arguments, "audioStreamIndex", "AudioStreamIndex") is null
+                && RequestValue(arguments, "subtitleStreamIndex", "SubtitleStreamIndex") is null;
+        }
+
+        private static object? RequestValue(IDictionary<string, object?> arguments, string query, string property)
+        {
+            if (arguments.TryGetValue(query, out var value) && value is not null)
+            {
+                return value;
+            }
+
+            return arguments.TryGetValue("playbackInfoDto", out var body) && body is not null
+                ? body.GetType().GetProperty(property)?.GetValue(body)
+                : null;
+        }
+
+        [LoggerMessage(EventId = 5, Level = LogLevel.Information,
+            Message = "VOD preferred an equivalent original source: source={Source} height={Height} fps={Fps} video={Video} audio={Audio} expectedDelivery={Delivery}")]
+        private static partial void LogSourceSelected(ILogger logger, string? source, int? height, float? fps,
+            string? video, string? audio, string delivery);
 
         internal static bool IsNativeVideoRequest(string? controller, string action) =>
             (controller == "Jellyfin.Api.Controllers.VideosController" && action is "GetVideoStream" or "GetVideoStreamByContainer")

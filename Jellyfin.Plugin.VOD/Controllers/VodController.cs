@@ -181,6 +181,11 @@ namespace Jellyfin.Plugin.VOD.Controllers
 
             if (master is null)
             {
+                if (youtube)
+                {
+                    _ytDlp.InvalidateResolution(video.VideoUrl, format, resolution);
+                }
+
                 return height is null && !youtube
                     ? Redirect(resolution.Url)
                     : StatusCode(503, new

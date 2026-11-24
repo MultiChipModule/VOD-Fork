@@ -133,7 +133,7 @@ namespace Jellyfin.Plugin.VOD.Services
         /// </summary>
         /// <param name="video">The stored video record.</param>
         /// <param name="localBaseUrl">The configured base URL Jellyfin reaches this plugin on.</param>
-        /// <returns>One to three members, the primary at index 0.</returns>
+        /// <returns>The primary at index 0, followed by the bounded set of quality alternatives.</returns>
         internal static IReadOnlyList<VersionMember> For(VideoRecord video, string localBaseUrl)
         {
             ArgumentNullException.ThrowIfNull(video);
@@ -144,7 +144,10 @@ namespace Jellyfin.Plugin.VOD.Services
                     PathFor(localBaseUrl, video.Id, null))
             };
 
-            foreach (var tier in QualityLadder.OfferedTiers(video.Extras.Qualities))
+            var tiers = YouTubeCaption.IsYouTubePage(video.VideoUrl)
+                ? QualityLadder.YouTubeTiers(video.Extras.Qualities)
+                : QualityLadder.OfferedTiers(video.Extras.Qualities);
+            foreach (var tier in tiers)
             {
                 members.Add(new VersionMember(
                     tier,

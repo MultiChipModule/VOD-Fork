@@ -18,7 +18,7 @@ namespace Jellyfin.Plugin.VOD.Services
     /// Reads the selected stream, HLS master and YouTube caption metadata from the same yt-dlp extraction; neither YouTube nor Arte still publishes
     /// a muxed progressive format, so the bare URL means video without audio.
     /// </remarks>
-    public sealed partial class YtDlpService : IYtDlpService
+    public sealed partial class YtDlpService : IYtDlpService, IDisposable
     {
         private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(60);
         private static readonly TimeSpan PlaylistTimeout = TimeSpan.FromMinutes(10);
@@ -26,7 +26,7 @@ namespace Jellyfin.Plugin.VOD.Services
         private readonly CookieJar _cookies;
         private readonly YtDlpThrottle _throttle;
         private readonly ILogger<YtDlpService> _logger;
-        private readonly PlaylistCache _resolutions = new();
+        private readonly YouTubeResolutionCache _resolutions = new(TimeProvider.System);
 
         /// <summary>Initializes a new instance of the <see cref="YtDlpService"/> class.</summary>
         /// <param name="cookies">The cookie jar, one working copy per lane.</param>
@@ -45,7 +45,7 @@ namespace Jellyfin.Plugin.VOD.Services
         /// <param name="pageUrl">The page URL as accepted by yt-dlp.</param>
         /// <param name="format">The yt-dlp format selector (e.g. <c>bv*[protocol^=m3u8]</c>).</param>
         /// <param name="cancellationToken">Cancellation token.</param>
-        public async Task<StreamResolution?> ResolveAsync(
+        public Task<StreamResolution?> ResolveAsync(
             string pageUrl,
             string format,
             CancellationToken cancellationToken)
@@ -53,13 +53,25 @@ namespace Jellyfin.Plugin.VOD.Services
             ArgumentException.ThrowIfNullOrWhiteSpace(pageUrl);
             ArgumentException.ThrowIfNullOrWhiteSpace(format);
 
-            var youtube = YouTubeCaption.IsYouTubePage(pageUrl);
-            var resolutionKey = $"{format}|{pageUrl}";
-            if (youtube && _resolutions.TryGet(resolutionKey, out var cached))
-            {
-                return ParseYouTubeResolution(cached);
-            }
+            return YouTubeCaption.IsYouTubePage(pageUrl)
+                ? _resolutions.ResolveAsync(pageUrl, format, token => ExtractStreamAsync(pageUrl, format, true, token),
+                    cancellationToken, Plugin.Instance?.Configuration.EnablePlaybackDiagnostics == true ? LogYouTubeCache : null)
+                : ExtractStreamAsync(pageUrl, format, false, cancellationToken);
+        }
 
+        [LoggerMessage(EventId = 14, Level = LogLevel.Information,
+            Message = "VOD YouTube resolution cache hit={Hit}")]
+        private partial void LogYouTubeCache(bool hit);
+
+        internal void InvalidateResolution(string page, string format, StreamResolution served)
+            => _resolutions.Invalidate(page, format, served);
+
+        /// <inheritdoc />
+        public void Dispose() => _resolutions.Dispose();
+
+        private async Task<StreamResolution?> ExtractStreamAsync(
+            string pageUrl, string format, bool youtube, CancellationToken cancellationToken)
+        {
             var startInfo = BuildBaseStartInfo();
             using var cookies = await _cookies.AcquireAsync(PlatformLane.Playback, cancellationToken).ConfigureAwait(false);
             ApplyCookies(startInfo, cookies);
@@ -96,7 +108,6 @@ namespace Jellyfin.Plugin.VOD.Services
                 var result = ParseYouTubeResolution(stdout);
                 if (result is not null)
                 {
-                    _resolutions.Set(resolutionKey, stdout);
                     LogResolved(pageUrl, result.IsManifest, sw.ElapsedMilliseconds);
                 }
 

@@ -12,4 +12,4 @@ category: "General"
 artifacts:
   - "Jellyfin.Plugin.VOD.dll"
 changelog: |-
-  - Repair YouTube HLS stream mapping and add sanitized playback diagnostics.
+  - Prefer equivalent compatible YouTube originals and coalesce source resolution.

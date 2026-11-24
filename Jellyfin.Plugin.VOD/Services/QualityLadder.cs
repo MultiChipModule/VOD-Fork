@@ -111,6 +111,22 @@ namespace Jellyfin.Plugin.VOD.Services
             return best is null || best == reference ? [reference] : [reference, best];
         }
 
+        internal static IReadOnlyList<Tier> YouTubeTiers(IReadOnlyList<VideoQuality> qualities)
+        {
+            var offered = OfferedTiers(qualities).ToList();
+            var heights = offered.Select(tier => tier.Height).ToHashSet();
+            // Preserve the legacy tier identities. Add at most two compatible alternatives at
+            // the same heights so a codec switch need not also be a resolution downgrade.
+            var alternatives = qualities.Where(quality => heights.Contains(quality.Height)
+                    && quality.Codec is "h264" or "vp9" or "av1" or "hevc")
+                .OrderByDescending(quality => quality.Height).ThenByDescending(quality => quality.Fps ?? 0)
+                .DistinctBy(quality => (quality.Height, quality.Codec))
+                .Where(quality => !offered.Any(tier => tier.Height == quality.Height && tier.Codec == quality.Codec))
+                .Take(2).ToArray();
+            offered.AddRange(alternatives.Select(quality => new Tier(quality.Height, quality.Codec, quality.Fps)));
+            return offered;
+        }
+
         /// <summary>
         /// The label shown in the "Version" menu: the height, the fps when it exceeds 30, and the
         /// codec when it is not h264 — which is how the menu warns that a tier will transcode.

@@ -99,6 +99,23 @@ namespace Jellyfin.Plugin.VOD.Tests.Integration
             await AssertTimestampsAsync("muxed.mkv");
         }
 
+        [Fact]
+        public async Task AudioOnlyEncodingPreservesCopyableVideo()
+        {
+            await RunAsync("ffmpeg", ["-f", "lavfi", "-i", "testsrc2=size=320x180:rate=60",
+                "-f", "lavfi", "-i", "sine=frequency=400:sample_rate=48000", "-t", "2", "-c:v", "libx264",
+                "-threads", "1", "-c:a", "libopus", "input-opus.mkv"]);
+            await RunAsync("ffmpeg", ["-i", "input-opus.mkv", "-map", "0:v", "-map", "0:a",
+                "-c:v", "copy", "-c:a", "aac", "audio-only-encode.mp4"]);
+            var output = await ProbeAsync("audio-only-encode.mp4");
+            Assert.Equal("h264", Assert.Single(output, stream => stream.Type == MediaStreamType.Video).Codec);
+            Assert.Equal("aac", Assert.Single(output, stream => stream.Type == MediaStreamType.Audio).Codec);
+            var fps = await RunAsync("ffprobe", ["-select_streams", "v", "-show_entries", "stream=r_frame_rate",
+                "-of", "csv=p=0", "audio-only-encode.mp4"]);
+            Assert.Equal("60/1", fps.Trim());
+            await RunAsync("ffmpeg", ["-xerror", "-i", "audio-only-encode.mp4", "-map", "0:v", "-frames:v", "8", "-f", "null", "-"]);
+        }
+
         private async Task AssertTimestampsAsync(string file)
         {
             using var result = JsonDocument.Parse(await RunAsync("ffprobe",
