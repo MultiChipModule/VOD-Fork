@@ -6,6 +6,15 @@
         "overview": "YouTube English captions for Jellyfin VOD",
         "owner": "MultiChipModule (upstream bakeneko)",
         "category": "General",
-        "versions": []
+        "versions": [
+            {
+                "version": "5.0.1.0",
+                "changelog": "Add automatic English caption fallback, a bounded WebVTT cache and authenticated subtitle delivery.",
+                "targetAbi": "12.1.0.0",
+                "timestamp": "2026-11-24T22:01:25Z",
+                "sourceUrl": "https://github.com/MultiChipModule/VOD-Fork/releases/download/v5.0.1.0/vod-fork_5.0.1.0.zip",
+                "checksum": "e5267c7269ecc6bb32234e7ef8912338"
+            }
+        ]
     }
 ]
