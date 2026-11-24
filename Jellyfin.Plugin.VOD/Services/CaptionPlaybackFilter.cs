@@ -12,6 +12,7 @@ using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Persistence;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
+using MediaBrowser.Model.Session;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.AspNetCore.Mvc.Filters;
@@ -249,6 +250,42 @@ namespace Jellyfin.Plugin.VOD.Services
             stream.Type == MediaStreamType.Subtitle && stream.Language is { } language
             && YouTubeCaption.IsEnglish(language);
 
+        internal bool NormalizeNativeReport(object payload, Guid userId)
+        {
+            if (users.GetUserById(userId) is not { } user)
+            {
+                return false;
+            }
+
+            Video? Visible(Guid id) => library.GetItemById<BaseItem>(id, user) as Video;
+            bool IsYouTube(string id) => database.GetVideoByUuid(id) is { } row && YouTubeCaption.IsYouTubePage(row.VideoUrl);
+            return payload switch
+            {
+                PlaybackProgressInfo progress => NativePlaybackReports.Normalize(progress, Visible, IsYouTube),
+                PlaybackStopInfo stopped => NativePlaybackReports.Normalize(stopped, Visible, IsYouTube),
+                _ => false
+            };
+        }
+
+        internal Guid? ChooseBudgetAlternative(Guid itemId, Guid userId, Guid currentSourceId, int budget,
+            int? audioIndex, int? subtitleIndex)
+        {
+            if (users.GetUserById(userId) is not { } user
+                || library.GetItemById<BaseItem>(itemId, user) is not Video item
+                || item.GetProviderId("VOD") is not { Length: > 0 } vodId)
+            {
+                return null;
+            }
+
+            var sources = item.GetAllVersions()
+                .Where(version => string.Equals(version.GetProviderId("VOD"), vodId, StringComparison.Ordinal)
+                    && library.GetItemById<BaseItem>(version.Id, user) is Video)
+                .Select(version => new YouTubeBudgetSelection.Source(version.Id, version.Path, ReadStreams(version.Id)))
+                .ToArray();
+            var current = sources.FirstOrDefault(source => source.Id == currentSourceId);
+            return current is null ? null : YouTubeBudgetSelection.Choose(current, sources, budget, audioIndex, subtitleIndex);
+        }
+
         internal bool CanOptimizeSelection(Guid itemId, Guid userId)
         {
             if (userData is null || users.GetUserById(userId) is not { } user
@@ -325,6 +362,11 @@ namespace Jellyfin.Plugin.VOD.Services
                 {
                     var captions = http.RequestServices.GetRequiredService<CaptionPlaybackFilter>();
                     var prepared = await captions.TryPrepareAsync(itemId, userId, config, http.RequestAborted).ConfigureAwait(false);
+                    if (prepared && action.ActionName == "GetPostedPlaybackInfo")
+                    {
+                        TrySelectBudgetSource(context, captions, itemId, userId, config.EnablePlaybackDiagnostics);
+                    }
+
                     var executed = await next().ConfigureAwait(false);
                     var info = (executed.Result as ObjectResult)?.Value as PlaybackInfoResponse;
                     if (prepared && info?.MediaSources is { Count: > 1 })
@@ -349,6 +391,10 @@ namespace Jellyfin.Plugin.VOD.Services
 
                     return;
                 }
+                else if (authenticated && controller == "Jellyfin.Api.Controllers.PlaystateController")
+                {
+                    ObserveNativeReport(context, action.ActionName, userId, config.EnablePlaybackDiagnostics);
+                }
                 else if (authenticated && config.EnablePlaybackDiagnostics && IsNativeVideoRequest(controller, action.ActionName)
                     && context.ActionArguments.TryGetValue("itemId", out var nativeItem) && nativeItem is Guid nativeItemId
                     && http.RequestServices.GetRequiredService<CaptionPlaybackFilter>().IsVisibleYouTubeVideo(nativeItemId, userId))
@@ -369,17 +415,118 @@ namespace Jellyfin.Plugin.VOD.Services
                     && TryGetSubtitleRequest(context.ActionArguments, out var subtitleItem, out var source, out var index))
                 {
                     var captions = http.RequestServices.GetRequiredService<CaptionPlaybackFilter>();
-                    if (captions.IsManagedSubtitle(source, index)
-                        && (!authenticated || !captions.CanReadSubtitle(subtitleItem, source, userId)))
+                    if (captions.IsManagedSubtitle(source, index))
                     {
-                        context.Result = authenticated ? new NotFoundResult() : new UnauthorizedResult();
-                        return;
+                        if (!authenticated || !captions.CanReadSubtitle(subtitleItem, source, userId))
+                        {
+                            context.Result = authenticated ? new NotFoundResult() : new UnauthorizedResult();
+                            return;
+                        }
+
+                        if (config.EnablePlaybackDiagnostics)
+                        {
+                            var executed = await next().ConfigureAwait(false);
+                            var status = (executed.Result as Microsoft.AspNetCore.Mvc.Infrastructure.IStatusCodeActionResult)?.StatusCode
+                                ?? http.Response.StatusCode;
+                            LogSubtitleRequest(http.RequestServices.GetRequiredService<ILogger<CaptionPlaybackDispatch>>(),
+                                subtitleItem, source, index, status);
+                            return;
+                        }
                     }
                 }
             }
 
             await next().ConfigureAwait(false);
         }
+
+        private static void TrySelectBudgetSource(ActionExecutingContext context, CaptionPlaybackFilter captions,
+            Guid itemId, Guid userId, bool diagnostics)
+        {
+            var arguments = context.ActionArguments;
+            try
+            {
+                if (RequestValue(arguments, "maxStreamingBitrate", "MaxStreamingBitrate") is not int { } budget
+                    || RequestValue(arguments, "mediaSourceId", "MediaSourceId") is not string sourceId
+                    || !Guid.TryParse(sourceId, out var requestedSource)
+                    || (RequestValue(arguments, "userId", "UserId") is Guid requestedUser && requestedUser != userId)
+                    || RequestValue(arguments, "liveStreamId", "LiveStreamId") is string { Length: > 0 }
+                    || RequestValue(arguments, "allowVideoStreamCopy", "AllowVideoStreamCopy") is false
+                    || captions.ChooseBudgetAlternative(itemId, userId, requestedSource, budget,
+                        RequestValue(arguments, "audioStreamIndex", "AudioStreamIndex") as int?,
+                        RequestValue(arguments, "subtitleStreamIndex", "SubtitleStreamIndex") as int?) is not { } lower)
+                {
+                    return;
+                }
+
+                // Keep native negotiation, including client profile, seek and track selections.
+                arguments["mediaSourceId"] = lower.ToString("N");
+                if (diagnostics)
+                {
+                    LogBudgetSource(context.HttpContext.RequestServices.GetRequiredService<ILogger<CaptionPlaybackDispatch>>(),
+                        itemId, requestedSource, lower, budget);
+                }
+            }
+#pragma warning disable CA1031 // Keep the current source if the alternative cannot be evaluated.
+            catch (Exception ex) when (ex is not OperationCanceledException)
+#pragma warning restore CA1031
+            {
+                if (diagnostics)
+                {
+                    LogSelectionUnavailable(context.HttpContext.RequestServices.GetRequiredService<ILogger<CaptionPlaybackDispatch>>(),
+                        ex.GetType().Name);
+                }
+            }
+        }
+
+        private static void ObserveNativeReport(ActionExecutingContext context, string action, Guid userId, bool diagnostics)
+        {
+            var argument = action switch
+            {
+                "ReportPlaybackStart" => "playbackStartInfo",
+                "ReportPlaybackProgress" => "playbackProgressInfo",
+                "ReportPlaybackStopped" => "playbackStopInfo",
+                _ => null
+            };
+            if (argument is null || !context.ActionArguments.TryGetValue(argument, out var payload) || payload is null)
+            {
+                return;
+            }
+
+            var services = context.HttpContext.RequestServices;
+            var captions = services.GetRequiredService<CaptionPlaybackFilter>();
+            var itemId = payload switch
+            {
+                PlaybackProgressInfo progress => progress.ItemId,
+                PlaybackStopInfo stopped => stopped.ItemId,
+                _ => Guid.Empty
+            };
+
+            try
+            {
+                var normalized = captions.NormalizeNativeReport(payload, userId);
+                if (diagnostics && itemId != Guid.Empty && captions.IsVisibleYouTubeVideo(itemId, userId))
+                {
+                    LogNativeReport(services.GetRequiredService<ILogger<CaptionPlaybackDispatch>>(), action, itemId, normalized);
+                }
+            }
+#pragma warning disable CA1031 // Keep the original native report when enrichment is unavailable.
+            catch (Exception ex) when (ex is not OperationCanceledException)
+#pragma warning restore CA1031
+            {
+                if (diagnostics)
+                {
+                    LogSelectionUnavailable(services.GetRequiredService<ILogger<CaptionPlaybackDispatch>>(), ex.GetType().Name);
+                }
+            }
+        }
+
+        [LoggerMessage(EventId = 9, Level = LogLevel.Information,
+            Message = "VOD external subtitle request item={ItemId} source={Source} index={Index} actionStatus={Status}")]
+        private static partial void LogSubtitleRequest(ILogger logger, Guid itemId, Guid source, int index, int status);
+
+        [LoggerMessage(EventId = 8, Level = LogLevel.Information,
+            Message = "VOD native playback report action={Action} reportedItem={ItemId} normalizedAlternate={Normalized}")]
+        private static partial void LogNativeReport(ILogger logger, string action, Guid itemId, bool normalized);
 
         private static void TryPreferOriginal(ActionExecutingContext context, string action, CaptionPlaybackFilter captions,
             PlaybackInfoResponse info, Guid itemId, Guid userId, bool diagnostics)
@@ -453,6 +600,10 @@ namespace Jellyfin.Plugin.VOD.Services
                 ? body.GetType().GetProperty(property)?.GetValue(body)
                 : null;
         }
+
+        [LoggerMessage(EventId = 7, Level = LogLevel.Information,
+            Message = "VOD selected a lower original source for item={ItemId} oldSource={OldSource} newSource={NewSource} maxBitrate={Bitrate}")]
+        private static partial void LogBudgetSource(ILogger logger, Guid itemId, Guid oldSource, Guid newSource, int bitrate);
 
         [LoggerMessage(EventId = 5, Level = LogLevel.Information,
             Message = "VOD preferred an equivalent original source: source={Source} height={Height} fps={Fps} video={Video} audio={Audio} expectedDelivery={Delivery}")]

@@ -12,4 +12,4 @@ category: "General"
 artifacts:
   - "Jellyfin.Plugin.VOD.dll"
 changelog: |-
-  - Prefer equivalent compatible YouTube originals and coalesce source resolution.
+  - Preserve native playback report identities and prefer compatible lower original YouTube variants.

@@ -1,5 +1,11 @@
 # Changelog
 
+## 5.1.3.0
+
+- Prefer a verified lower original YouTube rung when an existing pinned source exceeds the requested bitrate.
+- Preserve the visible item and actual version identities in native playback reports from clients that report an alternate item.
+- Extend opt-in logs for native playback reporting and external subtitle requests.
+
 ## 5.1.2.0
 
 - Prefer equivalent original YouTube HLS sources when Jellyfin's device profile indicates that copying can avoid encoding.

@@ -124,6 +124,19 @@ namespace Jellyfin.Plugin.VOD.Services
                 .Where(quality => !offered.Any(tier => tier.Height == quality.Height && tier.Codec == quality.Codec))
                 .Take(2).ToArray();
             offered.AddRange(alternatives.Select(quality => new Tier(quality.Height, quality.Codec, quality.Fps)));
+            // Keep a few actual low-bandwidth AVC rungs for clients whose quality menu
+            // sends a bitrate limit instead of choosing a published version.
+            foreach (var ceiling in new[] { 720, 480, 360 })
+            {
+                var lower = qualities.Where(quality => quality.Height <= ceiling && quality.Codec == "h264")
+                    .OrderByDescending(quality => quality.Height).ThenByDescending(quality => quality.Fps ?? 0)
+                    .FirstOrDefault();
+                if (lower is not null && !offered.Any(tier => tier.Height == lower.Height && tier.Codec == lower.Codec))
+                {
+                    offered.Add(new Tier(lower.Height, lower.Codec, lower.Fps));
+                }
+            }
+
             return offered;
         }
 

@@ -116,6 +116,39 @@ namespace Jellyfin.Plugin.VOD.Tests.Integration
             await RunAsync("ffmpeg", ["-xerror", "-i", "audio-only-encode.mp4", "-map", "0:v", "-frames:v", "8", "-f", "null", "-"]);
         }
 
+        [Fact]
+        public async Task ReducedBudgetUsesOriginalLowerHlsVariantAndRemuxesAtResume()
+        {
+            await BuildInputsAsync();
+            var masterPath = Path.Combine(_directory, "master.m3u8");
+            var master = await File.ReadAllTextAsync(masterPath);
+            var sources = new List<YouTubeBudgetSelection.Source>();
+            foreach (var (height, bandwidth) in new[] { (360, 850_000), (180, 400_000) })
+            {
+                var filtered = HlsPlaylistFilter.FilterMaster(master, new Uri(masterPath), height, "h264",
+                    [], [], rewriteSubtitle: static _ => null);
+                Assert.NotNull(filtered);
+                var name = $"budget-{height}.m3u8";
+                await File.WriteAllTextAsync(Path.Combine(_directory, name), filtered);
+                var streams = await ProbeAsync(name);
+                streams.First(stream => stream.Type == MediaStreamType.Video).BitRate = bandwidth;
+                streams.First(stream => stream.Type == MediaStreamType.Audio).BitRate = 96_000;
+                var route = $"http://localhost/VOD/stream/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.m3u8?height={height}&codec=h264";
+                sources.Add(new YouTubeBudgetSelection.Source(Guid.NewGuid(), route, streams));
+            }
+
+            var choice = YouTubeBudgetSelection.Choose(sources[0], sources, 600_000, 0, -1);
+            Assert.Equal(sources[1].Id, choice);
+            await RunAsync("ffmpeg", ["-ss", "1", "-i", "budget-180.m3u8",
+                .. Map(sources[1].Streams), "-c", "copy", "budget-resume.mkv"]);
+            var output = await ProbeAsync("budget-resume.mkv");
+            Assert.Contains(output, stream => stream.Type == MediaStreamType.Audio && stream.Codec == "aac");
+            var video = Assert.Single(output, stream => stream.Type == MediaStreamType.Video);
+            Assert.Equal(180, video.Height);
+            Assert.Equal("h264", video.Codec);
+            await RunAsync("ffmpeg", ["-xerror", "-i", "budget-resume.mkv", "-map", "0:v", "-frames:v", "8", "-f", "null", "-"]);
+        }
+
         private async Task AssertTimestampsAsync(string file)
         {
             using var result = JsonDocument.Parse(await RunAsync("ffprobe",
