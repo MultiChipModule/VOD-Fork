@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "5.1.2.0",
+                "changelog": "Prefer equivalent compatible YouTube originals and coalesce concurrent source resolution.",
+                "targetAbi": "12.1.0.0",
+                "timestamp": "2026-11-24T23:06:08Z",
+                "sourceUrl": "https://github.com/MultiChipModule/VOD-Fork/releases/download/v5.1.2.0/vod-fork_5.1.2.0.zip",
+                "checksum": "6d53be1bae0f27c9d629e478a4fa34d1"
+            },
+            {
                 "version": "5.1.1.0",
                 "changelog": "Repair the YouTube HLS stream mapping regression and add opt-in sanitized playback diagnostics.",
                 "targetAbi": "12.1.0.0",
