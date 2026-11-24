@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag (for example, v5.0.1.0)
+        description: Existing version tag matching Directory.Build.props
         required: true
         type: string
 
@@ -36,6 +36,18 @@ jobs:
           test "$RELEASE_TAG" = "v$version"
           test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
           git merge-base --is-ancestor HEAD origin/main
+          git show origin/main:manifest.json | python3 -c '
+          import json, sys
+          version = tuple(map(int, sys.argv[1].split(".")))
+          assert len(version) == 4
+          previous = [tuple(map(int, item["version"].split("."))) for plugin in json.load(sys.stdin) for item in plugin["versions"]]
+          if previous and version <= max(previous):
+              sys.exit("The tag must be newer than every version already in the catalog")
+          ' "$version"
+      - name: Install verified Jellyfin FFmpeg test tools
+        run: |
+          bash scripts/install-test-ffmpeg.sh "$RUNNER_TEMP/vod-ffmpeg"
+          printf 'VOD_TEST_FFMPEG_DIR=%s\n' "$RUNNER_TEMP/vod-ffmpeg" >> "$GITHUB_ENV"
       - run: dotnet test --configuration Release
       - run: dotnet publish Jellyfin.Plugin.VOD --configuration Release --no-restore --output publish
       - name: Build and validate release assets
@@ -49,6 +61,15 @@ jobs:
         run: |
           gh release create "$RELEASE_TAG" "$RUNNER_TEMP"/vod-release/*.zip "$RUNNER_TEMP"/vod-release/*.sha256 \
             --verify-tag --title "VOD-Fork ${RELEASE_TAG#v}" --generate-notes
+      - name: Verify hosted release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          hosted="$RUNNER_TEMP/vod-hosted"
+          gh release download "$RELEASE_TAG" --pattern '*.zip' --pattern '*.sha256' --dir "$hosted"
+          (cd "$hosted" && sha256sum -c ./*.sha256 && unzip -t ./*.zip)
+          cmp "$hosted/vod-fork_${RELEASE_TAG#v}.zip" "$RUNNER_TEMP/vod-release/vod-fork_${RELEASE_TAG#v}.zip"
       - name: Publish the repository manifest
         run: |
           git fetch origin main

@@ -250,6 +250,11 @@
                     </div>
 
                     <label class="checkboxContainer">
+                        <input is="emby-checkbox" type="checkbox" id="enablePlaybackDiagnostics" />
+                        <span>Log YouTube playback negotiation (for troubleshooting)</span>
+                    </label>
+
+                    <label class="checkboxContainer">
                         <input is="emby-checkbox" type="checkbox" id="enableAutomaticEnglishCaptions" />
                         <span>Enable YouTube automatic English captions</span>
                     </label>
@@ -662,6 +667,7 @@
                                 (config.PreferredSubtitleLanguages || []).join(', ');
                             document.querySelector('#youTubeChannelLibraryName').value = config.YouTubeChannelLibraryName || '';
                             document.querySelector('#youTubeExcludedPlaylistIds').value = config.YouTubeExcludedPlaylistIds || '';
+                            document.querySelector('#enablePlaybackDiagnostics').checked = config.EnablePlaybackDiagnostics === true;
                             document.querySelector('#enableAutomaticEnglishCaptions').checked =
                                 config.EnableAutomaticEnglishCaptions !== false;
                             document.querySelector('#allowTranslatedEnglishCaptions').checked =
@@ -719,6 +725,7 @@
                                 .split(',').map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
                             config.YouTubeChannelLibraryName = document.querySelector('#youTubeChannelLibraryName').value.trim();
                             config.YouTubeExcludedPlaylistIds = document.querySelector('#youTubeExcludedPlaylistIds').value.trim();
+                            config.EnablePlaybackDiagnostics = document.querySelector('#enablePlaybackDiagnostics').checked;
                             config.EnableAutomaticEnglishCaptions =
                                 document.querySelector('#enableAutomaticEnglishCaptions').checked;
                             config.AllowTranslatedEnglishCaptions =

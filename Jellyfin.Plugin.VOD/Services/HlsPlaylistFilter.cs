@@ -209,6 +209,13 @@ namespace Jellyfin.Plugin.VOD.Services
             if (subtitles.Count == 0)
             {
                 variantLine = SubtitlesAttribute().Replace(variantLine, string.Empty);
+                if (Attribute(variantLine, "CODECS") is { } codecs)
+                {
+                    var remaining = codecs.Split(',', StringSplitOptions.TrimEntries)
+                        .Where(codec => !codec.Equals("wvtt", StringComparison.OrdinalIgnoreCase)
+                            && !codec.StartsWith("stpp", StringComparison.OrdinalIgnoreCase));
+                    variantLine = variantLine.Replace($"CODECS=\"{codecs}\"", $"CODECS=\"{string.Join(',', remaining)}\"", StringComparison.Ordinal);
+                }
             }
 
             sb.Append(variantLine).Append('\n');

@@ -12,17 +12,19 @@ using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Tasks;
+using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.VOD.Services.Sync
 {
     /// <summary>Projects published YouTube items into the optional native channel library.</summary>
-    public sealed class YouTubeChannelTask : IScheduledTask
+    public sealed partial class YouTubeChannelTask : IScheduledTask
     {
         private readonly Func<PluginConfiguration?> _configuration;
         private readonly IVodDatabase _database;
         private readonly IYtDlpService _ytDlp;
         private readonly ILibraryManager _library;
         private readonly LibraryPublisher _publisher;
+        private readonly ILogger<YouTubeChannelTask> _logger;
 
         /// <summary>Initializes the channel discovery and publication task.</summary>
         /// <param name="configuration">Reads current plugin settings.</param>
@@ -30,14 +32,16 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
         /// <param name="ytDlp">Lists channels and playlists using the existing platform throttle.</param>
         /// <param name="library">Resolves existing Jellyfin playback items.</param>
         /// <param name="publisher">Updates the native channel folders and playlist links.</param>
+        /// <param name="logger">Reports discovery and publication summaries.</param>
         public YouTubeChannelTask(Func<PluginConfiguration?> configuration, IVodDatabase database,
-            IYtDlpService ytDlp, ILibraryManager library, LibraryPublisher publisher)
+            IYtDlpService ytDlp, ILibraryManager library, LibraryPublisher publisher, ILogger<YouTubeChannelTask> logger)
         {
             _configuration = configuration;
             _database = database;
             _ytDlp = ytDlp;
             _library = library;
             _publisher = publisher;
+            _logger = logger;
         }
 
         /// <inheritdoc />
@@ -62,6 +66,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             var config = _configuration();
             if (config is null || string.IsNullOrWhiteSpace(config.YouTubeChannelLibraryName))
             {
+                LogNoTarget();
                 return;
             }
 
@@ -84,6 +89,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             var excluded = config.YouTubeExcludedPlaylistIds.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
                 .ToHashSet(StringComparer.Ordinal);
             var channels = new List<ChannelSource>();
+            var skipped = 0;
             var knownPlaylists = new Dictionary<string, IReadOnlyList<ChannelPlaylist>>(StringComparer.Ordinal);
             var now = DateTimeOffset.UtcNow;
             foreach (var (source, type) in sources)
@@ -93,6 +99,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
                 var configuredPlaylist = isChannel ? null : VodNativeId.ForSource(source.Url)?["youtube_pl_".Length..];
                 if (!isChannel && (configuredPlaylist is null || excluded.Contains(configuredPlaylist)))
                 {
+                    skipped++;
                     continue;
                 }
 
@@ -135,9 +142,21 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             }
 
             var catalog = YouTubeLibraryCatalog.Build(channels, excluded, now);
-            await _publisher.PublishChannelCatalogAsync(target.Anchor, catalog, cancellationToken).ConfigureAwait(false);
+            var report = await _publisher.PublishChannelCatalogAsync(target.Anchor, catalog, cancellationToken).ConfigureAwait(false);
+            LogCatalogSummary(catalog.Count, knownPlaylists.Values.Sum(playlists => playlists.Count),
+                catalog.Sum(channel => channel.Playlists.Sum(playlist => playlist.Items.Count)),
+                report.Created, report.Updated, report.Unchanged, report.Removed, skipped);
             progress.Report(100);
         }
+
+        [LoggerMessage(EventId = 1, Level = LogLevel.Information,
+            Message = "YouTube channel task skipped because no mixed browse library is configured")]
+        private partial void LogNoTarget();
+
+        [LoggerMessage(EventId = 2, Level = LogLevel.Information,
+            Message = "YouTube channel task: channels={Channels} discoveredPlaylists={Playlists} playbackLinks={Links} created={Created} updated={Updated} unchanged={Unchanged} removed={Removed} skippedSources={Skipped}")]
+        private partial void LogCatalogSummary(int channels, int playlists, int links, int created,
+            int updated, int unchanged, int removed, int skipped);
 
         private async Task<IReadOnlyList<ChannelPlaylist>> DiscoverAsync(
             string channelId, HashSet<string> excluded, CancellationToken cancellationToken)

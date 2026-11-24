@@ -60,3 +60,7 @@ Unit and publisher tests should cover catalog behavior. An integration check on 
 ## Phase 4 — Maintenance and deployment
 
 Strengthen retention reconciliation and dry-run cleanup, subtitle cache maintenance, migration and rollback, reproducible build and release automation, and the fork manifest and TrueNAS documentation. Phase 3 already enforces retention in the new library views.
+
+## Playback stability follow-up
+
+[Playback recovery and Infuse diagnostics](PLAYBACK_RECOVERY.md) records the production regression, local FFmpeg evidence, upgrade and rollback. Verify native Jellyfin Web playback and collect an Infuse negotiation trace before choosing a compatibility path. Keep the incremental retention and per-user subscription work on the roadmap while verifying playback stability.

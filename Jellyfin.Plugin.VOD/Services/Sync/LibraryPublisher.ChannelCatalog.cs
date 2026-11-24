@@ -16,9 +16,12 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
     {
         private const string ChannelCatalogProvider = "VodYouTubeCatalog";
 
-        internal async Task PublishChannelCatalogAsync(
+        internal readonly record struct ChannelCatalogReport(int Created, int Updated, int Unchanged, int Removed);
+
+        internal async Task<ChannelCatalogReport> PublishChannelCatalogAsync(
             Folder anchor, IReadOnlyList<ChannelNode> channels, CancellationToken cancellationToken)
         {
+            int created = 0, updatedCount = 0, unchanged = 0, removed = 0;
             var expected = new HashSet<Guid>();
             for (var channelIndex = 0; channelIndex < channels.Count; channelIndex++)
             {
@@ -30,6 +33,13 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
                 var existing = _libraryManager.GetItemById<Folder>(id);
                 var folder = existing ?? new Folder { Id = id, ParentId = anchor.Id };
                 var changed = ApplyCatalogMetadata(folder, channelKey, channel.Name, null, channel.Avatar, channel.Banner, CatalogSortName(channelIndex, channel.Name));
+                if (existing is null)
+                    created++;
+                else if (changed)
+                    updatedCount++;
+                else
+                    unchanged++;
+
                 if (existing is null || changed)
                 {
                     await CommitAsync(folder, anchor, existing is null, cancellationToken).ConfigureAwait(false);
@@ -59,31 +69,43 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
                         updated = true;
                     }
 
+                    if (oldPlaylist is null)
+                        created++;
+                    else if (updated)
+                        updatedCount++;
+                    else
+                        unchanged++;
+
                     if (oldPlaylist is null || updated)
                     {
                         await CommitAsync(item, folder, oldPlaylist is null, cancellationToken).ConfigureAwait(false);
                     }
                 }
 
-                RemoveOldCatalogNodes(folder, expectedPlaylists, cancellationToken);
+                removed += RemoveOldCatalogNodes(folder, expectedPlaylists, cancellationToken);
             }
 
-            RemoveOldCatalogNodes(anchor, expected, cancellationToken);
+            removed += RemoveOldCatalogNodes(anchor, expected, cancellationToken);
+            return new ChannelCatalogReport(created, updatedCount, unchanged, removed);
         }
 
         private static string CatalogSortName(int index, string name) =>
             string.Create(CultureInfo.InvariantCulture, $"{index:D10} {name}");
 
-        private void RemoveOldCatalogNodes(Folder parent, HashSet<Guid> expected, CancellationToken token)
+        private int RemoveOldCatalogNodes(Folder parent, HashSet<Guid> expected, CancellationToken token)
         {
+            var removed = 0;
             foreach (var item in _libraryManager.GetItemList(new InternalItemsQuery { ParentId = parent.Id }))
             {
                 token.ThrowIfCancellationRequested();
                 if (!expected.Contains(item.Id) && item.GetProviderId(ChannelCatalogProvider) is not null)
                 {
                     _libraryManager.DeleteItem(item, new DeleteOptions { DeleteFileLocation = false }, true);
+                    removed++;
                 }
             }
+
+            return removed;
         }
 
         private static bool ApplyCatalogMetadata(BaseItem item, string key, string name, string? overview,

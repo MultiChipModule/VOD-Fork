@@ -161,19 +161,21 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
             var automaticOnly = CaptionPlaybackFilter.UpdateStreams([embedded, french], [automatic], cache)!;
             Assert.Equal([embedded, french], automaticOnly.Take(2));
             var both = CaptionPlaybackFilter.UpdateStreams(automaticOnly, [creator, automatic], cache)!;
-            Assert.Equal(3, both.Count);
-            Assert.Same(french, both[0]);
-            Assert.Equal("English (Creator-uploaded)", both[1].Title);
-            Assert.True(both[1].IsDefault);
-            Assert.False(both[2].IsDefault);
-            Assert.NotEqual(both[1].Index, both[2].Index);
-            Assert.Equal(automaticOnly[^1].Index, both[2].Index);
+            Assert.Equal(4, both.Count);
+            Assert.Equal([embedded, french], both.Take(2));
+            var managedCreator = both[2];
+            var managedAutomatic = both[3];
+            Assert.Equal("English (Creator-uploaded)", managedCreator.Title);
+            Assert.True(managedCreator.IsDefault);
+            Assert.False(managedAutomatic.IsDefault);
+            Assert.NotEqual(managedCreator.Index, managedAutomatic.Index);
+            Assert.Equal(automaticOnly[^1].Index, managedAutomatic.Index);
             Assert.Equal(creator, cache.Find(VideoUrl, config, creator: true));
             Assert.Equal(automatic, cache.Find(VideoUrl, config, creator: false));
             Assert.Null(CaptionPlaybackFilter.UpdateStreams(both, [creator, automatic], cache));
             var creatorOnly = CaptionPlaybackFilter.UpdateStreams(both, [creator], cache)!;
-            Assert.Equal(both[1].Index, creatorOnly[1].Index);
-            Assert.Equal([french], CaptionPlaybackFilter.UpdateStreams(creatorOnly, [], cache));
+            Assert.Equal(managedCreator.Index, creatorOnly[^1].Index);
+            Assert.Equal([embedded, french], CaptionPlaybackFilter.UpdateStreams(creatorOnly, [], cache));
             Assert.Null(CaptionPlaybackFilter.UpdateStreams([french], [], cache));
         }
 

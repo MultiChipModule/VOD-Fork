@@ -113,12 +113,14 @@ namespace Jellyfin.Plugin.VOD.Services
         /// Members are walked primary first, then tallest tier, then the rest: the primary's
         /// description is what the reference tier may copy instead of paying for a second probe.
         /// </remarks>
+        /// <param name="youtube">Whether to prepare a YouTube audio/video-only master.</param>
         public async Task<DescribeOutcome> DescribeGroupAsync(
             PluginConfiguration config,
             string vodUuid,
             string upstreamMaster,
             Uri masterBaseUri,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool youtube = false)
         {
             ArgumentNullException.ThrowIfNull(config);
             ArgumentException.ThrowIfNullOrEmpty(vodUuid);
@@ -149,7 +151,7 @@ namespace Jellyfin.Plugin.VOD.Services
                 {
                     if (await DescribeMemberAsync(
                             config, vodUuid, member, upstreamMaster, masterBaseUri,
-                            audioLangs, subLangs, cancellationToken)
+                            audioLangs, subLangs, youtube, cancellationToken)
                         .ConfigureAwait(false))
                     {
                         described++;
@@ -216,7 +218,7 @@ namespace Jellyfin.Plugin.VOD.Services
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                var filtered = Filter(upstreamMaster, masterBaseUri, tier?.Height, tier?.Codec, audioLangs, subLangs);
+                var filtered = Filter(upstreamMaster, masterBaseUri, tier?.Height, tier?.Codec, audioLangs, subLangs, YouTubeCaption.IsYouTubePage(video.VideoUrl));
                 if (filtered is null)
                 {
                     LogTierGone(video.Id, tier?.Height, tier?.Codec);
@@ -344,9 +346,10 @@ namespace Jellyfin.Plugin.VOD.Services
             Uri masterBaseUri,
             string audioLangs,
             string subLangs,
+            bool youtube,
             CancellationToken cancellationToken)
         {
-            var filtered = Filter(upstreamMaster, masterBaseUri, member, audioLangs, subLangs);
+            var filtered = Filter(upstreamMaster, masterBaseUri, member, audioLangs, subLangs, youtube);
             if (filtered is null)
             {
                 // The tier this member serves is no longer offered upstream. Nothing to describe,
@@ -367,7 +370,7 @@ namespace Jellyfin.Plugin.VOD.Services
             if (member.Tier is not null
                 && TryCopyFromPrimary(
                     vodUuid, member, filtered, upstreamMaster, masterBaseUri,
-                    audioLangs, subLangs, cancellationToken))
+                    audioLangs, subLangs, youtube, cancellationToken))
             {
                 return true;
             }
@@ -381,6 +384,24 @@ namespace Jellyfin.Plugin.VOD.Services
 
             Save(member.Item, streams, filtered, cancellationToken);
             return true;
+        }
+
+        internal async Task<IReadOnlyList<MediaStream>?> RefreshYouTubeLayoutAsync(
+            PluginConfiguration config, Video item, string vodId, CancellationToken cancellationToken)
+        {
+            var (height, codec) = VersionGroup.TierOf(item.Path);
+            var probe = await ProbeAsync(config, vodId,
+                height is { } value && codec is not null ? new Tier(value, codec, null) : null,
+                cancellationToken).ConfigureAwait(false);
+            return probe is not null && HasCurrentYouTubeLayout(probe) ? probe : null;
+        }
+
+        internal static bool HasCurrentYouTubeLayout(IReadOnlyList<MediaStream> streams)
+        {
+            var physical = streams.Where(stream => !stream.IsExternal).ToArray();
+            return physical.Any(stream => stream.Type == MediaStreamType.Video)
+                && !physical.Any(stream => stream.Type == MediaStreamType.Subtitle)
+                && physical.Select(stream => stream.Index).SequenceEqual(Enumerable.Range(0, physical.Length));
         }
 
         /// <summary>Probes one member through our own route, one heavy probe at a time.</summary>
@@ -512,6 +533,7 @@ namespace Jellyfin.Plugin.VOD.Services
             Uri masterBaseUri,
             string audioLangs,
             string subLangs,
+            bool youtube,
             CancellationToken cancellationToken)
         {
             var primary = Members(vodUuid).FirstOrDefault(m => m.Tier is null);
@@ -520,7 +542,7 @@ namespace Jellyfin.Plugin.VOD.Services
                 return false;
             }
 
-            var filteredPrimary = Filter(upstreamMaster, masterBaseUri, primary, audioLangs, subLangs);
+            var filteredPrimary = Filter(upstreamMaster, masterBaseUri, primary, audioLangs, subLangs, youtube);
             if (filteredPrimary is null)
             {
                 return false;
@@ -533,12 +555,13 @@ namespace Jellyfin.Plugin.VOD.Services
             }
 
             var copy = _repository.GetMediaStreams(new MediaStreamQuery { ItemId = primary.Item.Id });
-            if (copy.Count == 0)
+            if (copy.Count == 0 || (youtube && !HasCurrentYouTubeLayout(copy)))
             {
                 return false;
             }
 
-            Save(member.Item, copy, filteredMember, cancellationToken);
+            var physical = youtube ? copy.Where(stream => !stream.IsExternal).ToArray() : copy;
+            Save(member.Item, physical, filteredMember, cancellationToken);
             LogCopiedFromPrimary(member.Item.Name, primary.Item.Name);
             return true;
         }
@@ -548,8 +571,9 @@ namespace Jellyfin.Plugin.VOD.Services
             Uri masterBaseUri,
             GroupMember member,
             string audioLangs,
-            string subLangs)
-            => Filter(upstreamMaster, masterBaseUri, member.Height, member.Codec, audioLangs, subLangs);
+            string subLangs,
+            bool youtube)
+            => Filter(upstreamMaster, masterBaseUri, member.Height, member.Codec, audioLangs, subLangs, youtube);
 
         private string? Filter(
             string upstreamMaster,
@@ -557,7 +581,8 @@ namespace Jellyfin.Plugin.VOD.Services
             int? height,
             string? codec,
             string audioLangs,
-            string subLangs)
+            string subLangs,
+            bool youtube)
             => HlsPlaylistFilter.FilterMaster(
                 upstreamMaster,
                 masterBaseUri,
@@ -565,7 +590,7 @@ namespace Jellyfin.Plugin.VOD.Services
                 codec,
                 audioLangs.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
                 subLangs.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
-                _subtitles.Rewrite);
+                youtube ? static _ => null : _subtitles.Rewrite);
 
         private bool HasVideoStream(Guid itemId)
         {

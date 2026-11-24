@@ -162,20 +162,26 @@ namespace Jellyfin.Plugin.VOD.Controllers
                 return StatusCode(503, new { error = "Video unavailable", videoUrl = video.VideoUrl });
             }
 
+            var youtube = YouTubeCaption.IsYouTubePage(video.VideoUrl);
             if (!resolution.IsManifest)
             {
+                if (youtube && DescribesTheServedMaster(format))
+                {
+                    return StatusCode(503, new { error = "YouTube did not provide the expected HLS master" });
+                }
+
                 LogNoManifest(video.VideoUrl, format);
                 return Redirect(resolution.Url);
             }
 
             var master = await FilterUpstreamAsync(
                     resolution.Url, height, codec, effectiveAudioLangs, effectiveSubLangs,
-                    cancellationToken)
+                    youtube, cancellationToken)
                 .ConfigureAwait(false);
 
             if (master is null)
             {
-                return height is null
+                return height is null && !youtube
                     ? Redirect(resolution.Url)
                     : StatusCode(503, new
                     {
@@ -211,7 +217,7 @@ namespace Jellyfin.Plugin.VOD.Controllers
                 }
             }
 
-            DescribeInBackground(config, id, master, format);
+            DescribeInBackground(config, id, master, format, youtube);
 
             return Content(master.Filtered, "application/vnd.apple.mpegurl");
         }
@@ -787,7 +793,7 @@ namespace Jellyfin.Plugin.VOD.Controllers
         private sealed record FetchedMaster(string Filtered, string Upstream, Uri BaseUri);
 
         private async Task<FetchedMaster?> FilterUpstreamAsync(
-            string masterUrl, int? height, string? codec, string audioLangs, string subLangs, CancellationToken cancellationToken)
+            string masterUrl, int? height, string? codec, string audioLangs, string subLangs, bool youtube, CancellationToken cancellationToken)
         {
             var baseUri = new Uri(masterUrl);
             var upstream = await FetchStringAsync(masterUrl, cancellationToken).ConfigureAwait(false);
@@ -805,7 +811,7 @@ namespace Jellyfin.Plugin.VOD.Controllers
                 codec,
                 audioLangs.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
                 subLangs.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
-                _subtitles.Rewrite,
+                youtube ? static _ => null : _subtitles.Rewrite,
                 variantUrl => IsAllowedProxyHost(variantUrl)
                     ? $"{serverBase}/VOD/proxy/variant/{EncodeProxyUrl(variantUrl)}"
                     : variantUrl);
@@ -820,13 +826,14 @@ namespace Jellyfin.Plugin.VOD.Controllers
         /// <param name="id">The video UUID.</param>
         /// <param name="master">The fetched master whose upstream content the describer reuses.</param>
         /// <param name="format">The yt-dlp format selector used by this request.</param>
+        /// <param name="youtube">Whether the audio/video-only YouTube master was used.</param>
         /// <remarks>
         /// Deliberately not awaited, and deliberately not given the request's cancellation token:
         /// the request ends as soon as the playlist is written, which would cancel the work. The
         /// describer never throws, and its own guards keep two callers from probing the same member
         /// twice.
         /// </remarks>
-        private void DescribeInBackground(PluginConfiguration? config, string id, FetchedMaster master, string format)
+        private void DescribeInBackground(PluginConfiguration? config, string id, FetchedMaster master, string format, bool youtube)
         {
             if (config is null)
             {
@@ -851,7 +858,7 @@ namespace Jellyfin.Plugin.VOD.Controllers
                         // failsafe, and the task loop and its back-off registry own the retry logic.
                         _ = await _describer
                             .DescribeGroupAsync(
-                                config, id, master.Upstream, master.BaseUri, CancellationToken.None)
+                                config, id, master.Upstream, master.BaseUri, CancellationToken.None, youtube)
                             .ConfigureAwait(false);
                     }
 #pragma warning disable CA1031 // a background description must never take the server down

@@ -90,6 +90,9 @@ namespace Jellyfin.Plugin.VOD.Configuration
         [SuppressMessage("Performance", "CA1819:Properties should not return arrays", Justification = "string[] is required for Jellyfin XML serialization of BasePluginConfiguration.")]
         public string[] PreferredSubtitleLanguages { get; set; } = [];
 
+        /// <summary>Gets or sets whether sanitized YouTube playback negotiation is logged.</summary>
+        public bool EnablePlaybackDiagnostics { get; set; }
+
         /// <summary>Gets or sets whether to offer YouTube's automatically generated English captions.</summary>
         public bool EnableAutomaticEnglishCaptions { get; set; } = true;
 

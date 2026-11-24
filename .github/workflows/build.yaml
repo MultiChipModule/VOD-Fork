@@ -18,6 +18,10 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: 10.0.x
+      - name: Install verified Jellyfin FFmpeg test tools
+        run: |
+          bash scripts/install-test-ffmpeg.sh "$RUNNER_TEMP/vod-ffmpeg"
+          printf 'VOD_TEST_FFMPEG_DIR=%s\n' "$RUNNER_TEMP/vod-ffmpeg" >> "$GITHUB_ENV"
       - run: dotnet test --configuration Release
       - run: dotnet publish Jellyfin.Plugin.VOD --configuration Release --no-restore --output publish
       - run: python3 scripts/package-release.py publish artifacts --timestamp "$(git show -s --format=%cI)"
