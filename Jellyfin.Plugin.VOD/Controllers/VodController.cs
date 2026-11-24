@@ -209,6 +209,13 @@ namespace Jellyfin.Plugin.VOD.Controllers
                 // probe per member, so it runs in the background and never delays this response.
                 try
                 {
+                    if (youtube && resolution.Metadata is { } metadata
+                        && (video.Extras.Qualities.Count == 0 || video.PublishedAt is null
+                            || video.Description is null || video.ThumbnailUrl is null || video.DurationSeconds is null))
+                    {
+                        _db.SaveYouTubePlaybackMetadata(id, metadata);
+                    }
+
                     var streams = MediaStreamBuilder.Build(master.Filtered);
                     _streamWriter.TryWrite(
                         id, height, codec, streams,
@@ -499,11 +506,21 @@ namespace Jellyfin.Plugin.VOD.Controllers
 
             var warnings = BuildWarnings(config, _db.GetOutcomeCounts());
 
+            var extraction = _ytDlp.YouTubeStatus;
+            var cookiePath = config?.YouTubeCookiesPath;
+            var authentication = string.IsNullOrWhiteSpace(cookiePath) ? "Anonymous"
+                : CookieJar.CanUseYouTubeSeed(cookiePath) ? "Cookie file ready" : "Cookie file unusable";
+
             return Ok(new SourcesStatus(
                 libraries,
                 ProjectSourceStatus(_db.GetAllSources()),
                 collisions,
-                warnings));
+                warnings)
+            {
+                YouTube = new YouTubeExtractionStatus(authentication, extraction.Active,
+                    extraction.WaitingPlayback, extraction.BackgroundLastHour, extraction.Restriction,
+                    extraction.CooldownUntil, extraction.NextRetry, extraction.NextBackgroundRetry)
+            });
         }
 
         /// <summary>Resolves one library role live and reduces it to what the page shows.</summary>

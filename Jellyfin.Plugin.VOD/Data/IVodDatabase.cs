@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Jellyfin.Plugin.VOD.Data.Models;
+using Jellyfin.Plugin.VOD.Services.Sync.Dto;
 
 namespace Jellyfin.Plugin.VOD.Data
 {
@@ -13,6 +14,9 @@ namespace Jellyfin.Plugin.VOD.Data
     /// </remarks>
     public interface IVodDatabase : IDisposable
     {
+        /// <summary>Fills metadata gaps from a successful YouTube playback extraction.</summary>
+        void SaveYouTubePlaybackMetadata(string videoId, VideoMetadata metadata);
+
         /// <summary>Runs migrations and ensures the schema is up to date.</summary>
         void EnsureCreated();
 

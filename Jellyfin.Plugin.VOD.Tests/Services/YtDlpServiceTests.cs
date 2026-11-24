@@ -55,12 +55,13 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
         }
 
         [Fact]
-        public void PlaylistArguments_PinNothing_WhenNoLanguageIsConfigured()
+        public void PlaylistArguments_RequestDatesWithoutPinningAnUnconfiguredLanguage()
         {
             var args = YtDlpService.BuildPlaylistArguments(
                 "https://www.youtube.com/@x/videos", 30, null, PlatformLane.Youtube, null);
 
-            Assert.DoesNotContain("--extractor-args", args);
+            Assert.Contains("youtubetab:approximate_date", args);
+            Assert.DoesNotContain(args, arg => arg.StartsWith("youtube:lang=", System.StringComparison.Ordinal));
         }
 
         /// <summary>

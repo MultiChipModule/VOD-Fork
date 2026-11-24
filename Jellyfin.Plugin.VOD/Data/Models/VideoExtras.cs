@@ -25,6 +25,9 @@ namespace Jellyfin.Plugin.VOD.Data.Models
         /// </summary>
         public int Version { get; init; } = CurrentVersion;
 
+        /// <summary>Whether a trusted listing provides enough metadata to browse the video.</summary>
+        public bool ListingMetadataOnly { get; init; }
+
         /// <summary>The video qualities the platform offers, ascending by height.</summary>
         public IReadOnlyList<VideoQuality> Qualities { get; init; } = [];
 

@@ -26,6 +26,11 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
         private readonly LibraryPublisher _publisher;
         private readonly ILogger<YouTubeChannelTask> _logger;
 
+        // Keep completed inputs when a large catalog spans more than one background budget.
+        // A successful publish drops the checkpoint so the next sync discovers changes.
+        private readonly Dictionary<(string Url, int? Maximum), PlaylistInfo> _completedListings = new();
+        private DateTimeOffset _checkpointUntil;
+
         /// <summary>Initializes the channel discovery and publication task.</summary>
         /// <param name="configuration">Reads current plugin settings.</param>
         /// <param name="database">Provides retained canonical upload candidates.</param>
@@ -82,6 +87,13 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
                 throw new InvalidOperationException("The native YouTube channel library must use Jellyfin's mixed content type.");
             }
 
+            var now = DateTimeOffset.UtcNow;
+            if (now >= _checkpointUntil)
+            {
+                _completedListings.Clear();
+                _checkpointUntil = now.AddDays(2);
+            }
+
             var sources = config.Sources.Where(source => source.Enabled)
                 .Select(source => (Source: source, Type: SourceTypeDetector.Detect(source.Url)))
                 .Where(entry => entry.Type is SourceType.YoutubeChannel or SourceType.YoutubePlaylist)
@@ -91,7 +103,6 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             var channels = new List<ChannelSource>();
             var skipped = 0;
             var knownPlaylists = new Dictionary<string, IReadOnlyList<ChannelPlaylist>>(StringComparer.Ordinal);
-            var now = DateTimeOffset.UtcNow;
             foreach (var (source, type) in sources)
             {
                 var published = _database.GetVideosBySource(source.Url);
@@ -143,6 +154,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
 
             var catalog = YouTubeLibraryCatalog.Build(channels, excluded, now);
             var report = await _publisher.PublishChannelCatalogAsync(target.Anchor, catalog, cancellationToken).ConfigureAwait(false);
+            _completedListings.Clear();
             LogCatalogSummary(catalog.Count, knownPlaylists.Values.Sum(playlists => playlists.Count),
                 catalog.Sum(channel => channel.Playlists.Sum(playlist => playlist.Items.Count)),
                 report.Created, report.Updated, report.Unchanged, report.Removed, skipped);
@@ -194,8 +206,17 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             new(id, playlist.Title ?? fallbackName ?? id, playlist.ThumbnailUrl, playlist.Description,
                 playlist.Entries.Select(video => video.Id).ToArray());
 
-        private Task<PlaylistInfo?> ListAsync(string url, int? maximum, CancellationToken token) =>
-            _ytDlp.GetPlaylistEntriesAsync(url, maximum, null, token);
+        private async Task<PlaylistInfo?> ListAsync(string url, int? maximum, CancellationToken token)
+        {
+            var key = (url, maximum);
+            if (_completedListings.TryGetValue(key, out var existing))
+                return existing;
+
+            var listing = await _ytDlp.GetPlaylistEntriesAsync(url, maximum, null, token).ConfigureAwait(false);
+            if (listing is not null && (maximum is not null || !(listing.PlaylistCount > listing.Entries.Count)))
+                _completedListings[key] = listing;
+            return listing;
+        }
 
         internal static bool IsChannelId(string value) =>
             value.StartsWith("UC", StringComparison.Ordinal) && value.Length == 24 && value.All(IsYouTubeIdCharacter);

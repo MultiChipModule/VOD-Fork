@@ -6,6 +6,7 @@ using Jellyfin.Plugin.VOD.Configuration;
 using Jellyfin.Plugin.VOD.Data;
 using Jellyfin.Plugin.VOD.Data.Models;
 using Jellyfin.Plugin.VOD.Services.Sync;
+using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.VOD.Services.Publication
@@ -54,6 +55,9 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
     /// </remarks>
     public sealed partial class PublicationService : IPublicationPass
     {
+        private static readonly IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<MediaStream>>> _noDescriptions
+            = new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyList<MediaStream>>>(StringComparer.Ordinal);
+
         private readonly IVodDatabase _db;
         private readonly ListingStep _listing;
         private readonly CleanupStep _cleanup;
@@ -314,6 +318,8 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
                 cleanupAllowed = outcome.CleanupAllowed;
                 if (outcome.Outcome == CallOutcome.Ok)
                     listed++;
+                else if (YouTubeCaption.IsYouTubePage(source.Url))
+                    return new SourceTally(0, 0, 0, false);
             }
 
             // Only the step's own flag decides, and the timestamp handed over is the one the
@@ -321,6 +327,14 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
             // and the cleanup would retire the entire source.
             if (cleanupAllowed)
                 _cleanup.RemoveVideosGoneFromTheSource(source, turnNow, cancellationToken);
+
+            if (YouTubeCaption.IsYouTubePage(source.Url))
+            {
+                var published = await _checkup.RunAsync(source,
+                    _noDescriptions,
+                    config, turnNow, cancellationToken).ConfigureAwait(false);
+                return new SourceTally(listed, 0, published.Published, false);
+            }
 
             // Selected here, after the listing has created rows and the cleanup has removed them,
             // and from the same query the loop's stop test uses. A separate predicate that could
@@ -404,7 +418,7 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
                 // Disabled is paused, not removed: the source keeps its items, but it must not
                 // spend a yt-dlp call. The selector already skips it for listings; the due-video
                 // query knows nothing about the configuration, so it is skipped here.
-                if (!source.Enabled || taken.Contains(source.Url))
+                if (!source.Enabled || taken.Contains(source.Url) || YouTubeCaption.IsYouTubePage(source.Url))
                     continue;
 
                 if (refusedLanes.Contains(PlatformLane.For(source.Url)))

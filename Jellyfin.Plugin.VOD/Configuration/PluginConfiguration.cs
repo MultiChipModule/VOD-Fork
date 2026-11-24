@@ -25,6 +25,21 @@ namespace Jellyfin.Plugin.VOD.Configuration
         /// </summary>
         public string CookiesPath { get; set; } = string.Empty;
 
+        /// <summary>Gets or sets the dedicated server-side YouTube cookie file.</summary>
+        public string YouTubeCookiesPath { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets the maximum concurrent YouTube extractions.</summary>
+        public int YouTubeConcurrentExtractions { get; set; } = 1;
+
+        /// <summary>Gets or sets the minimum interval between YouTube extraction starts.</summary>
+        public int YouTubeExtractionIntervalSeconds { get; set; } = 10;
+
+        /// <summary>Gets or sets the hourly limit for background YouTube extractions.</summary>
+        public int YouTubeBackgroundPerHour { get; set; } = 60;
+
+        /// <summary>Gets or sets the initial YouTube restriction cooldown in minutes.</summary>
+        public int YouTubeRestrictionMinutes { get; set; } = 60;
+
         /// <summary>Gets or sets the absolute path or PATH name of the ffmpeg executable.</summary>
         public string FfmpegPath { get; set; } = "ffmpeg";
 

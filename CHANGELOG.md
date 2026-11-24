@@ -1,5 +1,11 @@
 # Changelog
 
+## 5.2.0.0
+
+- Publish YouTube videos from metadata-only listings and resolve and probe playable media on demand.
+- Share extraction limits across synchronization and playback. Prioritize playback and persist escalating restriction cooldowns.
+- Support a private, dedicated YouTube cookie file and show extraction and retry status in the administrator dashboard.
+
 ## 5.1.3.0
 
 - Prefer a verified lower original YouTube rung when an existing pinned source exceeds the requested bitrate.

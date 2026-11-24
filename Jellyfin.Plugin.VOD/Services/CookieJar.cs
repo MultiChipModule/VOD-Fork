@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Concurrent;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -75,14 +77,25 @@ namespace Jellyfin.Plugin.VOD.Services
         /// <param name="lane">The lane key, from <see cref="PlatformLane.For"/>.</param>
         /// <param name="cancellationToken">A token to abandon the wait.</param>
         /// <returns>The lease; disposing it releases that lane's file.</returns>
-        public async Task<CookieLease> AcquireAsync(string lane, CancellationToken cancellationToken)
+        /// <param name="youtube">Use the dedicated cookie configuration for YouTube.</param>
+        public async Task<CookieLease> AcquireAsync(string lane, CancellationToken cancellationToken, bool youtube = false)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(lane);
 
-            var seed = ConfiguredSeedPath;
-            if (seed is null || Plugin.Instance is null)
+            var seed = youtube ? Plugin.Instance?.Configuration.YouTubeCookiesPath : ConfiguredSeedPath;
+            if (string.IsNullOrWhiteSpace(seed) || Plugin.Instance is null)
             {
                 return new CookieLease(null, null);
+            }
+
+            if (youtube && !CanUseYouTubeSeed(seed))
+            {
+                return new CookieLease(null, null);
+            }
+
+            if (youtube && lane == PlatformLane.Playback)
+            {
+                lane = "youtube-playback";
             }
 
             var gate = _locks.GetOrAdd(lane, _ => new SemaphoreSlim(1, 1));
@@ -90,26 +103,35 @@ namespace Jellyfin.Plugin.VOD.Services
 
             try
             {
-                return new CookieLease(EnsureWorkingCopy(seed, lane), gate);
+                return new CookieLease(EnsureWorkingCopy(seed, lane, youtube), gate);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                LogSeedFailedOnce(seed, ex, lane);
+                if (!youtube)
+                {
+                    LogSeedFailedOnce(seed, ex, lane);
+                }
                 gate.Release();
                 return new CookieLease(null, null);
             }
         }
 
-        private string? EnsureWorkingCopy(string seed, string lane)
+        private string? EnsureWorkingCopy(string seed, string lane, bool youtube)
         {
             if (!File.Exists(seed))
             {
-                LogSeedMissingOnce(seed, lane);
+                if (!youtube)
+                {
+                    LogSeedMissingOnce(seed, lane);
+                }
                 return null;
             }
 
             var stamp = File.GetLastWriteTimeUtc(seed).Ticks
                 .ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (youtube)
+                stamp = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(seed + "\n" + stamp)));
+
             var workingPath = WorkingPathFor(lane);
             var stampPath = SeedStampPathFor(lane);
             var seeded = File.Exists(stampPath)
@@ -119,14 +141,79 @@ namespace Jellyfin.Plugin.VOD.Services
             if (!File.Exists(workingPath) || !string.Equals(stamp, seeded, StringComparison.Ordinal))
             {
                 Plugin.Instance!.EnsureDataFolder();
-                File.Copy(seed, workingPath, overwrite: true);
+                if (youtube)
+                {
+                    CopyPrivate(seed, workingPath);
+                }
+                else
+                {
+                    File.Copy(seed, workingPath, overwrite: true);
+                }
                 File.WriteAllText(stampPath, stamp);
                 RestrictPermissions(workingPath);
-                LogSeeded(seed);
+                if (!youtube)
+                {
+                    LogSeeded(seed);
+                }
+            }
+
+            if (youtube)
+            {
+                RestrictPermissions(workingPath);
             }
 
             _seedFailureLogged[lane] = false;
             return workingPath;
+        }
+
+        internal static bool CanUseYouTubeSeed(string path)
+        {
+            if (!Path.IsPathFullyQualified(path) || !File.Exists(path))
+            {
+                return false;
+            }
+
+            try
+            {
+                if (!OperatingSystem.IsWindows() && (File.GetUnixFileMode(path) & ~(UnixFileMode.UserRead | UnixFileMode.UserWrite)) != 0)
+                {
+                    return false;
+                }
+
+                using var reader = new StreamReader(path);
+                return reader.BaseStream.Length is > 0 and <= 4_194_304
+                    && reader.ReadLine() is "# Netscape HTTP Cookie File" or "# HTTP Cookie File";
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+
+        private static void CopyPrivate(string seed, string destination)
+        {
+            var temporary = destination + ".tmp";
+            try
+            {
+                var options = new FileStreamOptions { Access = FileAccess.Write, Mode = FileMode.CreateNew };
+                if (!OperatingSystem.IsWindows())
+                {
+                    options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+                }
+
+                File.Delete(temporary);
+                using (var write = new FileStream(temporary, options))
+                using (var read = File.OpenRead(seed))
+                {
+                    read.CopyTo(write);
+                }
+
+                File.Move(temporary, destination, overwrite: true);
+            }
+            finally
+            {
+                File.Delete(temporary);
+            }
         }
 
         private static void RestrictPermissions(string path)

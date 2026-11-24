@@ -53,9 +53,9 @@ nothing downloaded to disk.
   unzip -o /tmp/deno.zip -d /path/to/jellyfin/config/
   ```
   then set **JS runtime** to `deno:/config/deno`.
-- **Optional — cookies.** A Netscape-format cookie file lets yt-dlp read age-restricted or
-  members-only videos and helps against bot checks. A cookie file is as good as the account's
-  password: **use a throwaway account**, never a personal one.
+- **Optional YouTube authentication.** Anonymous extraction is the default. For a dedicated
+  server-side account, see [YouTube extraction and authentication](YOUTUBE_EXTRACTION.md).
+  The legacy cookies setting applies to other providers.
 
 ## Installation
 

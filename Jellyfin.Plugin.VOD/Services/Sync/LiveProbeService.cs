@@ -189,7 +189,8 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             PluginConfiguration config,
             SourceDefinition source,
             CancellationToken ct)
-            => ProbeSourceAsync(config, source, RunProbeAsync, ct);
+            => YouTubeCaption.IsYouTubePage(source.Url) ? Task.CompletedTask
+                : ProbeSourceAsync(config, source, RunProbeAsync, ct);
 
         /// <summary>
         /// Same as <see cref="ProbeSourceAsync(PluginConfiguration, SourceDefinition, CancellationToken)"/>,

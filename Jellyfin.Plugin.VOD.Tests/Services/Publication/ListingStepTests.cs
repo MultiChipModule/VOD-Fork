@@ -811,14 +811,33 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Publication
             Assert.False(outcome.CleanupAllowed);
         }
 
+        [Fact]
+        public void FlatListingCarriesVideoMetadataAndRetentionWithoutFormats()
+        {
+            var response = PlaylistInfo.ParseJson("""
+                {"_type":"playlist","entries":[{"id":"PM6lMoClzy8","ie_key":"Youtube",
+                "url":"https://www.youtube.com/watch?v=PM6lMoClzy8","title":"Original title",
+                "description":"Original description","thumbnail":"https://i.ytimg.com/example.jpg",
+                "timestamp":1760918400,"duration":75}]}
+                """);
+            var entry = Assert.Single(Assert.IsType<PlaylistInfo>(response).Entries);
+            var row = KnownVideo(entry.Id, listingTitle: null);
+            ListingStep.ApplyFlatYouTubeMetadata(row, entry, Now);
+
+            Assert.Equal("Original description", row.Description);
+            Assert.Equal("https://i.ytimg.com/example.jpg", row.ThumbnailUrl);
+            Assert.Equal(75, row.DurationSeconds);
+            Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1760918400), row.PublishedAt);
+            Assert.Empty(row.Extras.Qualities);
+            Assert.True(Publishability.IsPublishable(row, retentionDays: 0, Now));
+            Assert.False(Publishability.IsPublishable(row, retentionDays: 100, Now));
+        }
+
         // ── Retitling ─────────────────────────────────────────────────────────────────────────
 
         [Fact]
-        public async Task WhenVideoIsRetitled_ListingTitleAndTitleAreUpdated_AndMetadataIsMarkedStale()
+        public async Task YouTubeRetitleUpdatesBothTitlesWithoutSchedulingARefetch()
         {
-            // When the platform changes a video's title, the listing step detects it and flags the
-            // video for a metadata refetch by calling MarkMetadataStale. The wave then fills in the
-            // new title from the fresh metadata call.
             var db = Substitute.For<IVodDatabase>();
             var ytDlp = Substitute.For<IYtDlpService>();
             var video = KnownVideo("PM6lMoClzy8", listingTitle: "Old Title");
@@ -837,19 +856,12 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Publication
                 && v.ListingTitle == "New Title"
                 && v.Title == "New Title"));
 
-            // MarkMetadataStale is called so the wave refetches the video's metadata.
-            db.Received(1).MarkMetadataStale(video.Id);
+            db.DidNotReceive().MarkMetadataStale(video.Id);
         }
 
         [Fact]
         public async Task Retitle_DoesNotNullMetadataAt_SoVideoRemainsPublishable()
         {
-            // Setting metadata_at to NULL would make Publishability refuse the video and cause
-            // the checkup to un-publish it at the same turn — destroying the Jellyfin item and
-            // the watch state it held — for the sake of a title change.
-            // MarkMetadataStale writes UnixEpoch instead: non-null, older than any freshness
-            // window, which makes the video due for a refetch while keeping it published.
-            // This test protects that invariant end-to-end.
             var db = Substitute.For<IVodDatabase>();
             var ytDlp = Substitute.For<IYtDlpService>();
 
@@ -859,18 +871,13 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Publication
 
             db.GetVideosBySource(SourceUrl).Returns([video]);
 
-            // Simulate what MarkMetadataStale does: it sets metadata_at to UnixEpoch.
-            db.When(d => d.MarkMetadataStale(video.Id))
-              .Do(_ => video.MetadataAt = DateTimeOffset.UnixEpoch);
-
             ytDlp.GetPlaylistEntriesAsync(Arg.Any<string>(), Arg.Any<int?>(), Arg.Any<DateTimeOffset?>(),
                 Arg.Any<CancellationToken>(), Arg.Any<string?>(), Arg.Any<string?>())
                 .Returns(TwoEntryYoutubePlaylist("New Title", "Video Two"));
 
             await Make(db, ytDlp).RunAsync(ShortPlanned(), Config(), Now, default);
 
-            // UnixEpoch is not null: Publishability will not refuse the video.
-            Assert.Equal(DateTimeOffset.UnixEpoch, video.MetadataAt);
+            Assert.Equal(Now.AddDays(-1), video.MetadataAt);
             Assert.True(Publishability.IsPublishable(video, retentionDays: 0, Now));
         }
 

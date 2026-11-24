@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -177,12 +178,20 @@ namespace Jellyfin.Plugin.VOD.Services
 
             foreach (var track in tracks)
             {
+                if (ytDlp.YouTubeStatus.CooldownUntil is not null)
+                    break;
+
                 try
                 {
                     if (await cache.FetchAsync(videoKey, track, config, budget).ConfigureAwait(false) is { } result)
                     {
                         return result;
                     }
+                }
+                catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.TooManyRequests)
+                {
+                    ytDlp.RestrictYouTube("Rate limited");
+                    break;
                 }
                 catch (HttpRequestException)
                 {

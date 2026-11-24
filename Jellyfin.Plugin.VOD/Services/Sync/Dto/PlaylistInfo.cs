@@ -207,6 +207,17 @@ namespace Jellyfin.Plugin.VOD.Services.Sync.Dto
                 ? el.GetString()
                 : null;
 
+        private static DateOnly? ReadUploadDate(JsonElement entry)
+        {
+            if (DateOnly.TryParseExact(ReadString(entry, "upload_date"), "yyyyMMdd",
+                CultureInfo.InvariantCulture, DateTimeStyles.None, out var day))
+                return day;
+
+            return entry.TryGetProperty("timestamp", out var timestamp) && timestamp.ValueKind == JsonValueKind.Number
+                && timestamp.TryGetInt64(out var seconds) && seconds is >= 0 and <= 253402300799L
+                ? DateOnly.FromDateTime(DateTimeOffset.FromUnixTimeSeconds(seconds).UtcDateTime) : null;
+        }
+
         private static PlaylistEntry? ParseEntry(JsonElement el)
         {
             // Prefer webpage_url; fall back to url
@@ -240,11 +251,12 @@ namespace Jellyfin.Plugin.VOD.Services.Sync.Dto
                 Id = id,
                 VideoUrl = url,
                 Title = ReadString(el, "title"),
+                Description = ReadString(el, "description"),
+                ThumbnailUrl = PickImages(el).Primary,
                 IeKey = ieKey,
                 ChannelId = ReadString(el, "channel_id"),
                 Duration = duration,
-                UploadDate = DateOnly.TryParseExact(ReadString(el, "upload_date"), "yyyyMMdd",
-                    CultureInfo.InvariantCulture, DateTimeStyles.None, out var uploadDate) ? uploadDate : null,
+                UploadDate = ReadUploadDate(el),
                 LiveStatus = LiveStatusParser.FromYtDlp(
                     el.TryGetProperty("live_status", out var els) && els.ValueKind == JsonValueKind.String
                         ? els.GetString()

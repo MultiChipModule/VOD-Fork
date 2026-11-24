@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -22,6 +23,44 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
 
             Assert.Null(first.Path);
             Assert.Null(second.Path);
+        }
+
+        [Fact]
+        public async Task YouTubeDefaultsToAnonymousEvenForPlayback()
+        {
+            using var jar = new CookieJar(NullLogger<CookieJar>.Instance);
+            using var playback = await jar.AcquireAsync(PlatformLane.Playback, CancellationToken.None, youtube: true);
+            using var background = await jar.AcquireAsync(PlatformLane.Youtube, CancellationToken.None, youtube: true);
+            Assert.Null(playback.Path);
+            Assert.Null(background.Path);
+        }
+
+        [Fact]
+        public void DedicatedSeedRequiresAbsolutePathAndPrivateNetscapeFile()
+        {
+            var folder = Directory.CreateTempSubdirectory();
+            try
+            {
+                var file = Path.Combine(folder.FullName, "cookies.txt");
+                File.WriteAllText(file, "example");
+                if (!OperatingSystem.IsWindows())
+                    File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                Assert.False(CookieJar.CanUseYouTubeSeed(file));
+
+                File.WriteAllText(file, "# Netscape HTTP Cookie File\n");
+                Assert.False(CookieJar.CanUseYouTubeSeed("cookies.txt"));
+                Assert.True(CookieJar.CanUseYouTubeSeed(file));
+
+                if (!OperatingSystem.IsWindows())
+                {
+                    File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.GroupRead);
+                    Assert.False(CookieJar.CanUseYouTubeSeed(file));
+                }
+            }
+            finally
+            {
+                folder.Delete(recursive: true);
+            }
         }
 
         [Fact]

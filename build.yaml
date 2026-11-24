@@ -12,4 +12,4 @@ category: "General"
 artifacts:
   - "Jellyfin.Plugin.VOD.dll"
 changelog: |-
-  - Preserve native playback report identities and prefer compatible lower original YouTube variants.
+  - Publish YouTube from lightweight listings, resolve playback on demand, and add request pacing, cooldowns and optional private cookies.

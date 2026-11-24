@@ -14,6 +14,12 @@ namespace Jellyfin.Plugin.VOD.Services.Sync.Dto
         /// <summary>Gets the video title from the flat listing (may be incomplete for Arte).</summary>
         public string? Title { get; init; }
 
+        /// <summary>Gets the description when included in the flat listing.</summary>
+        public string? Description { get; init; }
+
+        /// <summary>Gets the original thumbnail URL when available.</summary>
+        public string? ThumbnailUrl { get; init; }
+
         /// <summary>Gets the yt-dlp extractor key (e.g. "Youtube", "ArteTV").</summary>
         public string IeKey { get; init; } = string.Empty;
 

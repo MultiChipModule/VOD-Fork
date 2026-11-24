@@ -48,7 +48,7 @@
                     </div>
 
                     <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="cookiesPath">Cookies file</label>
+                        <label class="inputLabel inputLabelUnfocused" for="cookiesPath">Cookies file for other providers</label>
                         <input id="cookiesPath" name="CookiesPath" type="text"
                                is="emby-input" class="emby-input"
                                placeholder="/config/cookies.txt" />
@@ -57,6 +57,38 @@
                             this file grants full account access.
                         </div>
                     </div>
+
+                    <h2>YouTube extraction</h2>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="YouTubeCookiesPath">Optional YouTube cookies.txt path</label>
+                        <input id="YouTubeCookiesPath" type="text" is="emby-input" class="emby-input" autocomplete="off" />
+                        <div class="fieldDescription">
+                            Leave blank for anonymous extraction. Use a dedicated account and a private Netscape-format file
+                            readable by Jellyfin. The file grants access to the account and YouTube may restrict it.
+                        </div>
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="YouTubeConcurrentExtractions">Concurrent YouTube extractions</label>
+                        <input id="YouTubeConcurrentExtractions" type="number" min="1" max="4" value="1" is="emby-input" class="emby-input" />
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="YouTubeExtractionIntervalSeconds">Minimum seconds between YouTube extractions</label>
+                        <input id="YouTubeExtractionIntervalSeconds" type="number" min="1" max="300" value="10" is="emby-input" class="emby-input" />
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="YouTubeBackgroundPerHour">Maximum background extractions per hour</label>
+                        <input id="YouTubeBackgroundPerHour" type="number" min="1" max="360" value="60" is="emby-input" class="emby-input" />
+                    </div>
+
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="YouTubeRestrictionMinutes">Initial restriction cooldown in minutes</label>
+                        <input id="YouTubeRestrictionMinutes" type="number" min="1" max="1440" value="60" is="emby-input" class="emby-input" />
+                    </div>
+
+                    <p id="youtubeExtractionStatus" role="status"></p>
 
                     <h2>Libraries</h2>
 
@@ -464,6 +496,24 @@
             var _sourceStatusByUrl = Object.create(null);
 
             function applyStatus(status) {
+                var youtube = status.YouTube;
+                var summary = document.getElementById('youtubeExtractionStatus');
+                if (youtube) {
+                    var details = [
+                        youtube.Authentication,
+                        youtube.Active + ' active extractions',
+                        youtube.WaitingPlayback + ' playback requests waiting',
+                        youtube.BackgroundLastHour + ' background extractions in the last hour'
+                    ];
+                    if (youtube.Restriction) details.push('Last restriction: ' + youtube.Restriction);
+                    if (youtube.CooldownUntil) details.push('Cooldown until ' + new Date(youtube.CooldownUntil).toLocaleString());
+                    if (youtube.NextRetry) details.push('Next playback attempt ' + new Date(youtube.NextRetry).toLocaleString());
+                    if (youtube.NextBackgroundRetry) details.push('Next background attempt ' + new Date(youtube.NextBackgroundRetry).toLocaleString());
+                    summary.textContent = details.join(' · ');
+                } else {
+                    summary.textContent = '';
+                }
+
                 var alert = document.getElementById('libraryAlert');
                 var warning = document.getElementById('libraryWarning');
                 var libraries = status.Libraries || [];
@@ -651,6 +701,11 @@
                             document.querySelector('#jsRuntime').value         = config.JsRuntime || '';
                             document.querySelector('#ffmpegPath').value        = config.FfmpegPath || '';
                             document.querySelector('#cookiesPath').value       = config.CookiesPath || '';
+                            document.getElementById('YouTubeCookiesPath').value = config.YouTubeCookiesPath || '';
+                            document.getElementById('YouTubeConcurrentExtractions').value = config.YouTubeConcurrentExtractions || 1;
+                            document.getElementById('YouTubeExtractionIntervalSeconds').value = config.YouTubeExtractionIntervalSeconds || 10;
+                            document.getElementById('YouTubeBackgroundPerHour').value = config.YouTubeBackgroundPerHour || 60;
+                            document.getElementById('YouTubeRestrictionMinutes').value = config.YouTubeRestrictionMinutes || 60;
                             document.querySelector('#localBaseUrl').value      = config.LocalBaseUrl || 'http://localhost:8096';
                             document.querySelector('#cacheMinutes').value      = config.CacheMinutes || 5;
                             document.querySelector('#liveProbeIntervalMinutes').value = config.LiveProbeIntervalMinutes != null ? config.LiveProbeIntervalMinutes : 5;
@@ -700,6 +755,11 @@
                             config.JsRuntime       = document.querySelector('#jsRuntime').value;
                             config.FfmpegPath      = document.querySelector('#ffmpegPath').value;
                             config.CookiesPath     = document.querySelector('#cookiesPath').value;
+                            config.YouTubeCookiesPath = document.getElementById('YouTubeCookiesPath').value.trim();
+                            config.YouTubeConcurrentExtractions = Number(document.getElementById('YouTubeConcurrentExtractions').value) || 1;
+                            config.YouTubeExtractionIntervalSeconds = Number(document.getElementById('YouTubeExtractionIntervalSeconds').value) || 10;
+                            config.YouTubeBackgroundPerHour = Number(document.getElementById('YouTubeBackgroundPerHour').value) || 60;
+                            config.YouTubeRestrictionMinutes = Number(document.getElementById('YouTubeRestrictionMinutes').value) || 60;
                             config.MoviesLibraryName = document.querySelector('#moviesLibraryName').value;
                             config.SeriesLibraryName = document.querySelector('#seriesLibraryName').value;
                             config.LocalBaseUrl    = document.querySelector('#localBaseUrl').value;

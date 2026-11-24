@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
+using System.Net;
+using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -27,6 +30,22 @@ namespace Jellyfin.Plugin.VOD.Services
         private readonly YtDlpThrottle _throttle;
         private readonly ILogger<YtDlpService> _logger;
         private readonly YouTubeResolutionCache _resolutions = new(TimeProvider.System);
+
+        private readonly YouTubeExtractionGate _youtubeGate = new(TimeProvider.System, () => Plugin.Instance?.Configuration,
+            () => Plugin.Instance is { } plugin ? Path.Combine(plugin.DataFolderPath, "youtube-restriction.json") : null);
+
+        private static readonly HttpClient _oEmbedClient = new(new HttpClientHandler
+        {
+            AllowAutoRedirect = false, UseCookies = false, CheckCertificateRevocationList = true
+        })
+        {
+            Timeout = TimeSpan.FromSeconds(8),
+            MaxResponseContentBufferSize = 256 * 1024
+        };
+
+        internal YouTubeExtractionGate.Snapshot YouTubeStatus => _youtubeGate.Status();
+
+        internal void RestrictYouTube(string reason) => _youtubeGate.Restricted(reason);
 
         /// <summary>Initializes a new instance of the <see cref="YtDlpService"/> class.</summary>
         /// <param name="cookies">The cookie jar, one working copy per lane.</param>
@@ -73,7 +92,7 @@ namespace Jellyfin.Plugin.VOD.Services
             string pageUrl, string format, bool youtube, CancellationToken cancellationToken)
         {
             var startInfo = BuildBaseStartInfo();
-            using var cookies = await _cookies.AcquireAsync(PlatformLane.Playback, cancellationToken).ConfigureAwait(false);
+            using var cookies = await _cookies.AcquireAsync(PlatformLane.Playback, cancellationToken, IsYouTube(pageUrl)).ConfigureAwait(false);
             ApplyCookies(startInfo, cookies);
             ApplyJsRuntime(startInfo);
 
@@ -84,7 +103,7 @@ namespace Jellyfin.Plugin.VOD.Services
             if (youtube)
             {
                 startInfo.ArgumentList.Add("--print");
-                startInfo.ArgumentList.Add("%(.{manifest_url,url,subtitles,automatic_captions})j");
+                startInfo.ArgumentList.Add("%(.{id,manifest_url,url,formats,subtitles,automatic_captions,upload_date,timestamp,description,thumbnail,duration})j");
             }
             else
             {
@@ -108,7 +127,7 @@ namespace Jellyfin.Plugin.VOD.Services
                 var result = ParseYouTubeResolution(stdout);
                 if (result is not null)
                 {
-                    LogResolved(pageUrl, result.IsManifest, sw.ElapsedMilliseconds);
+                    LogResolved("YouTube", result.IsManifest, sw.ElapsedMilliseconds);
                 }
 
                 return result;
@@ -141,7 +160,8 @@ namespace Jellyfin.Plugin.VOD.Services
                 var url = manifest ?? YouTubeCaption.ReadString(root, "url");
                 return url is null ? null : new StreamResolution(url, manifest is not null)
                 {
-                    EnglishCaptions = YouTubeCaption.ReadEnglish(root)
+                    EnglishCaptions = YouTubeCaption.ReadEnglish(root),
+                    Metadata = VideoMetadata.ParseJson(json)
                 };
             }
             catch (JsonException)
@@ -179,16 +199,22 @@ namespace Jellyfin.Plugin.VOD.Services
             string? lane = null,
             string? metadataLanguage = null)
         {
+            if (IsYouTube(url) && TryGetYouTubeVideoId(url) is { } videoId
+                && SourceTypeDetector.Detect(url) != SourceType.YoutubePlaylist)
+            {
+                return await GetPublicVideoListingAsync(videoId, cancellationToken).ConfigureAwait(false);
+            }
+
             lane ??= PlatformLane.For(url);
 
             // The lease is taken before the cookie file, so the pacing wait happens outside the
             // lane's cookie lock rather than holding it for three seconds.
-            using var lease = await _throttle
+            using var lease = IsYouTube(url) ? null : await _throttle
                 .EnterAsync(lane, YtDlpCallKind.Listing, cancellationToken)
                 .ConfigureAwait(false);
 
             var startInfo = BuildBaseStartInfo();
-            using var cookies = await _cookies.AcquireAsync(lane, cancellationToken).ConfigureAwait(false);
+            using var cookies = await _cookies.AcquireAsync(lane, cancellationToken, IsYouTube(url)).ConfigureAwait(false);
             ApplyCookies(startInfo, cookies);
             ApplyJsRuntime(startInfo);
 
@@ -211,7 +237,7 @@ namespace Jellyfin.Plugin.VOD.Services
             // fetched, not for one call.
             if (info is not null)
             {
-                lease.Charge(YtDlpThrottle.ExtraListingCalls(info.Entries.Count));
+                lease?.Charge(YtDlpThrottle.ExtraListingCalls(info.Entries.Count));
             }
 
             return info;
@@ -247,12 +273,12 @@ namespace Jellyfin.Plugin.VOD.Services
             CancellationToken cancellationToken)
         {
             var lane = PlatformLane.For(url);
-            using var lease = await _throttle
+            using var lease = IsYouTube(url) ? null : await _throttle
                 .EnterAsync(lane, YtDlpCallKind.Resolution, cancellationToken)
                 .ConfigureAwait(false);
 
             var startInfo = BuildBaseStartInfo();
-            using var cookies = await _cookies.AcquireAsync(lane, cancellationToken).ConfigureAwait(false);
+            using var cookies = await _cookies.AcquireAsync(lane, cancellationToken, IsYouTube(url)).ConfigureAwait(false);
             ApplyCookies(startInfo, cookies);
             ApplyJsRuntime(startInfo);
 
@@ -275,7 +301,7 @@ namespace Jellyfin.Plugin.VOD.Services
                     LogChannelOffAir(url);
                     break;
                 case MetadataOutcome.Failed when run.ExitCode != 0:
-                    LogResolveFailed(url, run.ExitCode, run.StdErr.Trim());
+                    LogResolveFailed(IsYouTube(url) ? "YouTube" : url, run.ExitCode, run.StdErr.Trim());
                     break;
                 case MetadataOutcome.Failed when result.Metadata is null:
                     LogParseFailed(url, "video metadata");
@@ -325,12 +351,12 @@ namespace Jellyfin.Plugin.VOD.Services
             CancellationToken cancellationToken)
         {
             var lane = PlatformLane.For(url);
-            using var lease = await _throttle
+            using var lease = IsYouTube(url) ? null : await _throttle
                 .EnterAsync(lane, YtDlpCallKind.Resolution, cancellationToken)
                 .ConfigureAwait(false);
 
             var startInfo = BuildBaseStartInfo();
-            using var cookies = await _cookies.AcquireAsync(lane, cancellationToken).ConfigureAwait(false);
+            using var cookies = await _cookies.AcquireAsync(lane, cancellationToken, IsYouTube(url)).ConfigureAwait(false);
             ApplyCookies(startInfo, cookies);
             ApplyJsRuntime(startInfo);
 
@@ -453,11 +479,16 @@ namespace Jellyfin.Plugin.VOD.Services
                 args.Add(dateAfter.Value.UtcDateTime.ToString("yyyyMMdd", CultureInfo.InvariantCulture));
             }
 
-            if (!string.IsNullOrWhiteSpace(metadataLanguage)
-                && string.Equals(lane, PlatformLane.Youtube, StringComparison.OrdinalIgnoreCase))
+            if (IsYouTube(url))
             {
                 args.Add("--extractor-args");
-                args.Add($"youtube:lang={metadataLanguage}");
+                args.Add("youtubetab:approximate_date");
+                if (!string.IsNullOrWhiteSpace(metadataLanguage)
+                    && string.Equals(lane, PlatformLane.Youtube, StringComparison.OrdinalIgnoreCase))
+                {
+                    args.Add("--extractor-args");
+                    args.Add($"youtube:lang={metadataLanguage}");
+                }
             }
 
             args.Add("--no-warnings");
@@ -510,7 +541,7 @@ namespace Jellyfin.Plugin.VOD.Services
 
             if (run.ExitCode != 0)
             {
-                LogResolveFailed(startInfo.ArgumentList[^1], run.ExitCode, run.StdErr.Trim());
+                LogResolveFailed(IsYouTube(startInfo.ArgumentList[^1]) ? "YouTube" : startInfo.ArgumentList[^1], run.ExitCode, run.StdErr.Trim());
                 return null;
             }
 
@@ -536,6 +567,29 @@ namespace Jellyfin.Plugin.VOD.Services
             string? lane = null,
             YtDlpLease? lease = null)
         {
+            var youtube = IsYouTube(startInfo.ArgumentList[^1]);
+            if (youtube && !string.IsNullOrWhiteSpace(Plugin.Instance?.Configuration.YouTubeCookiesPath)
+                && !startInfo.ArgumentList.Contains("--cookies"))
+            {
+                return new ProcessRun(-1, string.Empty, "Configured YouTube cookie file is unusable");
+            }
+
+            using var youtubeLease = youtube
+                ? await _youtubeGate.EnterAsync(lane is null, cancellationToken).ConfigureAwait(false) : null;
+            if (youtube && youtubeLease is null)
+            {
+                return new ProcessRun(-1, string.Empty, "YouTube rate-limit gate deferred extraction");
+            }
+
+            if (youtube)
+            {
+                startInfo.ArgumentList.Insert(0, "--ignore-config");
+                startInfo.ArgumentList.Insert(1, "--extractor-retries");
+                startInfo.ArgumentList.Insert(2, "0");
+                startInfo.ArgumentList.Insert(3, "--retries");
+                startInfo.ArgumentList.Insert(4, "0");
+            }
+
             using var process = new Process { StartInfo = startInfo };
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cts.CancelAfter(timeout);
@@ -571,6 +625,21 @@ namespace Jellyfin.Plugin.VOD.Services
             var stdout = await stdoutTask.ConfigureAwait(false);
             var stderr = await stderrTask.ConfigureAwait(false);
 
+            if (youtube)
+            {
+                var restriction = YouTubeExtractionGate.DetectRestriction(stderr);
+                if (restriction is not null)
+                {
+                    _youtubeGate.Restricted(restriction);
+                    return new ProcessRun(-1, string.Empty, "YouTube rate-limit restriction: " + restriction);
+                }
+
+                // Never forward raw YouTube stderr. It can contain signed URLs or local paths.
+                stderr = stderr.Contains("age", StringComparison.OrdinalIgnoreCase) &&
+                    stderr.Contains("Sign in", StringComparison.OrdinalIgnoreCase)
+                    ? "Sign in to confirm your age" : "YouTube extraction did not supply usable data";
+            }
+
             if (lease is not null)
             {
                 if (lane is not null && PlatformLimits.IsPlatformRefusal(lane, stderr, timedOut: false))
@@ -585,6 +654,58 @@ namespace Jellyfin.Plugin.VOD.Services
 
             return new ProcessRun(process.ExitCode, stdout, stderr);
         }
+
+        internal static string? TryGetYouTubeVideoId(string url)
+        {
+            if (!YouTubeCaption.IsYouTubePage(url) || !Uri.TryCreate(url, UriKind.Absolute, out var page))
+                return null;
+
+            var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(page.Query);
+            var path = page.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            var id = query.TryGetValue("v", out var video) ? video.ToString()
+                : page.IdnHost == "youtu.be" && path.Length == 1 ? path[0]
+                : path.Length == 2 && path[0] is "shorts" or "live" or "embed" ? path[1] : null;
+            return id is { Length: 11 } && System.Linq.Enumerable.All(id, c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_')
+                ? id : null;
+        }
+
+        private async Task<PlaylistInfo?> GetPublicVideoListingAsync(string id, CancellationToken cancellationToken)
+        {
+            using var lease = await _youtubeGate.EnterAsync(playback: false, cancellationToken).ConfigureAwait(false);
+            if (lease is null)
+                return null;
+
+            try
+            {
+                var page = $"https://www.youtube.com/watch?v={id}";
+                using var response = await _oEmbedClient.GetAsync(
+                    $"https://www.youtube.com/oembed?format=json&url={Uri.EscapeDataString(page)}", cancellationToken).ConfigureAwait(false);
+                if (response.StatusCode == HttpStatusCode.TooManyRequests)
+                    _youtubeGate.Restricted("Rate limited");
+                if (!response.IsSuccessStatusCode)
+                    return null;
+
+                using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+                var title = YouTubeCaption.ReadString(document.RootElement, "title");
+                return title is null ? null : new PlaylistInfo
+                {
+                    Title = title,
+                    Entries = [new PlaylistEntry
+                    {
+                        Id = id, Title = title, VideoUrl = page, IeKey = "Youtube",
+                        ThumbnailUrl = YouTubeCaption.ReadString(document.RootElement, "thumbnail_url")
+                    }]
+                };
+            }
+            catch (Exception ex) when (ex is HttpRequestException or JsonException
+                || (ex is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+            {
+                return null;
+            }
+        }
+
+        private static bool IsYouTube(string url) =>
+            string.Equals(PlatformLane.For(url), PlatformLane.Youtube, StringComparison.Ordinal);
 
         private void TryKill(Process process)
         {

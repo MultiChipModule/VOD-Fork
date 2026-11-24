@@ -5,6 +5,7 @@ using System.Linq;
 using Jellyfin.Plugin.VOD.Data;
 using Jellyfin.Plugin.VOD.Data.Models;
 using Jellyfin.Plugin.VOD.Services.Sync;
+using Jellyfin.Plugin.VOD.Services.Sync.Dto;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -121,6 +122,33 @@ namespace Jellyfin.Plugin.VOD.Tests.Data
         }
 
         // ── Schema ───────────────────────────────────────────────────────────────────────────────
+
+        [Fact]
+        public void YouTubePlaybackFillsMissingMetadataAndConcurrentListingKeepsIt()
+        {
+            SeedSource();
+            var staleListing = SeedVideo("lazy", metadataResult: CallOutcome.Ok, metadataAt: Now);
+            staleListing.Extras = staleListing.Extras with { ListingMetadataOnly = true };
+            staleListing.Description = "From the flat listing";
+            _db.UpsertVideo(staleListing);
+
+            _db.SaveYouTubePlaybackMetadata("lazy", new VideoMetadata
+            {
+                UploadDate = "20261019", Description = "Playback description", Duration = 30,
+                ManifestUrl = "https://example.invalid/signed?token=not-for-storage",
+                Qualities = [new VideoQuality(720, "h264", 30)]
+            });
+            staleListing.Title = "Updated listing title";
+            _db.UpsertVideo(staleListing);
+
+            var row = Assert.IsType<VideoRecord>(_db.GetVideoByUuid("lazy"));
+            Assert.Equal("Updated listing title", row.Title);
+            Assert.Equal("From the flat listing", row.Description);
+            Assert.Equal(new DateTimeOffset(2026, 10, 19, 0, 0, 0, TimeSpan.Zero), row.PublishedAt);
+            Assert.Equal(30, row.DurationSeconds);
+            Assert.Equal(720, Assert.Single(row.Extras.Qualities).Height);
+            Assert.Null(row.DescribedAt);
+        }
 
         [Fact]
         public void EnsureCreated_LeavesTheSchemaAtVersion9()

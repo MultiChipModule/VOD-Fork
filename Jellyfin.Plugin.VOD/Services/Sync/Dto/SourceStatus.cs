@@ -148,7 +148,16 @@ namespace Jellyfin.Plugin.VOD.Services.Sync.Dto
         IReadOnlyList<LibraryStatus> Libraries,
         IReadOnlyList<SourceStatus> Sources,
         IReadOnlyList<SourceKeyCollision> Collisions,
-        IReadOnlyList<string> Warnings);
+        IReadOnlyList<string> Warnings)
+    {
+        /// <summary>Current YouTube extraction state, without account credentials.</summary>
+        public YouTubeExtractionStatus? YouTube { get; init; }
+    }
+
+    /// <summary>Credential-free YouTube extraction activity and retry times.</summary>
+    public sealed record YouTubeExtractionStatus(string Authentication, int Active, int WaitingPlayback,
+        int BackgroundLastHour, string? Restriction, DateTimeOffset? CooldownUntil,
+        DateTimeOffset? NextRetry, DateTimeOffset? NextBackgroundRetry);
 
     /// <summary>
     /// One library the configuration page may offer, with what it is allowed to hold.

@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
@@ -63,6 +64,9 @@ namespace Jellyfin.Plugin.VOD.Services
             }
 
             using var response = await (client ?? _http).GetAsync(caption.Url, cancellationToken).ConfigureAwait(false);
+            if (response.StatusCode == HttpStatusCode.TooManyRequests)
+                throw new HttpRequestException("YouTube limited caption requests", null, HttpStatusCode.TooManyRequests);
+
             if (!response.IsSuccessStatusCode)
             {
                 return null;

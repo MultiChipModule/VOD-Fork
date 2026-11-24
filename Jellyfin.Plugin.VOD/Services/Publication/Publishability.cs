@@ -137,7 +137,7 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
                 return PublishRefusal.PlatformRefused;
             }
 
-            if (QualityLadder.OfferedTiers(video.Extras.Qualities).Count == 0)
+            if (!video.Extras.ListingMetadataOnly && QualityLadder.OfferedTiers(video.Extras.Qualities).Count == 0)
                 return PublishRefusal.NoOfferedTier;
 
             // Zero means unlimited, not "nothing passes": a source left at the default must publish

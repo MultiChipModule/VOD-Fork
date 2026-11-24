@@ -323,7 +323,8 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
             int existingCount,
             DateTimeOffset now)
         {
-            var keepFrom = sourceDef.RetentionDays > 0 && YouTubeCaption.IsYouTubePage(sourceUrl)
+            var youtube = YouTubeCaption.IsYouTubePage(sourceUrl);
+            var keepFrom = sourceDef.RetentionDays > 0 && youtube
                 ? DateOnly.FromDateTime(now.AddDays(-sourceDef.RetentionDays).UtcDateTime)
                 : (DateOnly?)null;
             var deduped = Deduplicate(playlist.Entries);
@@ -350,9 +351,18 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
                     // the published title. Arte carries no title in its flat listing, so we must
                     // not overwrite the metadata-fetched title with the native id fallback.
                     var oldListingTitle = existing.ListingTitle;
+                    if (youtube && !HasFlatYouTubeTitle(entry))
+                        continue;
+
                     existing.ListingTitle = entry.Title;
                     if (!string.IsNullOrWhiteSpace(entry.Title))
                         existing.Title = entry.Title.Trim();
+
+                    if (youtube)
+                    {
+                        existing.LiveStatus = entry.LiveStatus;
+                        ApplyFlatYouTubeMetadata(existing, entry, now);
+                    }
 
                     _db.UpsertVideo(existing);
 
@@ -362,9 +372,12 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
                     // destroying the Jellyfin item and its watch state for a title change.
                     if (PublishedTitle.HasBeenRetitled(oldListingTitle, entry.Title))
                     {
-                        _db.MarkMetadataStale(existing.Id);
+                        if (!youtube)
+                        {
+                            _db.MarkMetadataStale(existing.Id);
+                            LogRetitled(sourceUrl, entry.Id);
+                        }
                         retitled++;
-                        LogRetitled(sourceUrl, entry.Id);
                     }
                 }
                 else
@@ -393,6 +406,11 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
                         DurationSeconds = duration,
                         FirstSeenAt = now,
                     };
+                    if (youtube)
+                    {
+                        ApplyFlatYouTubeMetadata(record, entry, now);
+                    }
+
                     _db.UpsertVideo(record);
                     created++;
                 }
@@ -483,6 +501,38 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
         }
 
         // ── Log messages ─────────────────────────────────────────────────────────────────────────
+
+        private static bool HasFlatYouTubeTitle(PlaylistEntry entry) =>
+            !string.IsNullOrWhiteSpace(entry.Title)
+            && entry.Title is not ("[Deleted video]" or "[Private video]");
+
+        internal static void ApplyFlatYouTubeMetadata(VideoRecord row, PlaylistEntry entry, DateTimeOffset now)
+        {
+            if (!YouTubeCaption.IsYouTubePage(entry.VideoUrl) || !HasFlatYouTubeTitle(entry))
+            {
+                return;
+            }
+
+            if (entry.UploadDate is { } date && row.PublishedAt is null)
+                row.PublishedAt = new DateTimeOffset(date.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc));
+            row.Description = entry.Description ?? row.Description;
+            row.ThumbnailUrl = entry.ThumbnailUrl ?? row.ThumbnailUrl;
+            if (entry.Duration is >= 0 and <= int.MaxValue)
+                row.DurationSeconds = (int)entry.Duration.Value;
+
+            // Keep the original tier inventory and watchable states. A public listing is sufficient
+            // to browse, but does not assert that a playable stream or subtitle is available.
+            if (row.MetadataAt is null || row.MetadataResult is CallOutcome.RateLimited or CallOutcome.Timeout or CallOutcome.None
+                || (row.MetadataResult == CallOutcome.NeedsAuth
+                    && (row.Extras.Qualities.Count == 0 || YouTubeExtractionGate.DetectRestriction(row.MetadataDetail ?? string.Empty) is not null)))
+            {
+                row.MetadataAt = now;
+                row.MetadataResult = CallOutcome.Ok;
+                row.MetadataDetail = null;
+                row.MetadataAttempts = 0;
+                row.Extras = row.Extras with { Version = VideoExtras.CurrentVersion, ListingMetadataOnly = true };
+            }
+        }
 
         [LoggerMessage(EventId = 1, Level = LogLevel.Warning,
             Message = "Listing for {SourceUrl} failed: {Detail}")]

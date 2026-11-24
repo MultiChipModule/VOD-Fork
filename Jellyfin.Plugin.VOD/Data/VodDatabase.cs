@@ -5,6 +5,8 @@ using System.Text.Json;
 using System.Threading;
 using Jellyfin.Plugin.VOD.Configuration;
 using Jellyfin.Plugin.VOD.Data.Models;
+using Jellyfin.Plugin.VOD.Services.Sync.Dto;
+using Jellyfin.Plugin.VOD.Services.Publication;
 using Jellyfin.Plugin.VOD.Services.Sync;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
@@ -296,6 +298,16 @@ namespace Jellyfin.Plugin.VOD.Data
 
             lock (_sync)
             {
+                if (video.Extras.ListingMetadataOnly && GetVideoByUuid(video.Id) is { } stored)
+                {
+                    if (stored.Extras.Qualities.Count > 0)
+                        video.Extras = video.Extras with { Qualities = stored.Extras.Qualities };
+                    video.PublishedAt ??= stored.PublishedAt;
+                    video.Description ??= stored.Description;
+                    video.ThumbnailUrl ??= stored.ThumbnailUrl;
+                    video.DurationSeconds ??= stored.DurationSeconds;
+                }
+
                 using var cmd = Connection.CreateCommand();
                 cmd.CommandText = """
                     INSERT INTO videos
@@ -391,6 +403,42 @@ namespace Jellyfin.Plugin.VOD.Data
                 }
 
                 txn.Commit();
+            }
+        }
+
+        /// <inheritdoc />
+        public void SaveYouTubePlaybackMetadata(string videoId, VideoMetadata metadata)
+        {
+            lock (_sync)
+            {
+                var row = GetVideoByUuid(videoId);
+                if (row is null)
+                    return;
+
+                // The format inventory has no media URLs. Signed URLs stay in the playback cache.
+                var extras = row.Extras.Qualities.Count == 0 && metadata.Qualities.Count > 0
+                    ? row.Extras with { Qualities = metadata.Qualities }
+                    : row.Extras;
+                var published = row.PublishedAt ?? MetadataFill.ParseDate(metadata);
+                var description = row.Description ?? metadata.Description;
+                var thumbnail = row.ThumbnailUrl ?? metadata.Thumbnail;
+                var duration = row.DurationSeconds ?? (metadata.Duration is >= 0 and <= int.MaxValue ? (int?)metadata.Duration : null);
+                if (extras == row.Extras && published == row.PublishedAt && description == row.Description
+                    && thumbnail == row.ThumbnailUrl && duration == row.DurationSeconds)
+                    return;
+
+                using var command = Connection.CreateCommand();
+                command.CommandText = """
+                    UPDATE videos SET extras = $extras, published_at = $publishedAt, description = $description,
+                        thumbnail_url = $thumbnailUrl, duration_seconds = $duration WHERE id = $id
+                    """;
+                command.Parameters.AddWithValue("$id", videoId);
+                command.Parameters.AddWithValue("$extras", SerializeExtras(extras));
+                command.Parameters.AddWithValue("$publishedAt", (object?)published?.ToString("O") ?? DBNull.Value);
+                command.Parameters.AddWithValue("$description", (object?)description ?? DBNull.Value);
+                command.Parameters.AddWithValue("$thumbnailUrl", (object?)thumbnail ?? DBNull.Value);
+                command.Parameters.AddWithValue("$duration", (object?)duration ?? DBNull.Value);
+                command.ExecuteNonQuery();
             }
         }
 

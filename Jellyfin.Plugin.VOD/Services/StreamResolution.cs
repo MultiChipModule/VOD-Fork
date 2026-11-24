@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Jellyfin.Plugin.VOD.Services.Sync.Dto;
 
 namespace Jellyfin.Plugin.VOD.Services
 {
@@ -10,6 +11,8 @@ namespace Jellyfin.Plugin.VOD.Services
     /// </param>
     public sealed record StreamResolution(string Url, bool IsManifest)
     {
+        internal VideoMetadata? Metadata { get; init; }
+
         internal IReadOnlyList<YouTubeCaption> EnglishCaptions { get; init; } = [];
     }
 }

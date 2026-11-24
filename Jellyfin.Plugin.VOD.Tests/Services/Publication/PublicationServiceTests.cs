@@ -159,6 +159,8 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Publication
 
         private string Youtube => $"https://www.youtube.com/@chan-{_salt}/videos";
 
+        private string Twitch => $"https://www.twitch.tv/channel{_salt}/videos";
+
         private string Arte => $"https://www.arte.tv/fr/videos/RC-{_salt}/";
 
         private string Alpha => $"https://alpha.example/{_salt}";
@@ -704,7 +706,7 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Publication
         }
 
         [Fact]
-        public async Task APassWithWorkInTheFirstTurnOnly_RunsExactlyTwoTurns()
+        public async Task YouTubeListingPublishesWithoutResolvingMedia_AndTheNextTurnIsIdle()
         {
             // Catches both halves of the stop test: a loop that stops after the first turn without
             // asking again, and a loop that asks again but cannot tell that the work is done.
@@ -715,7 +717,12 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Publication
 
             Assert.Equal(2, report.Turns);
             Assert.Equal(1, report.SourcesListed);
-            Assert.Equal(1, report.VideosFetched);
+            Assert.Equal(0, report.VideosFetched);
+            Assert.DoesNotContain(_trace, step => step.StartsWith("metadata:", StringComparison.Ordinal));
+            Assert.Single(Rows(Youtube));
+            Assert.True(Rows(Youtube)[0].Extras.ListingMetadataOnly);
+            Assert.Empty(Rows(Youtube)[0].Extras.Qualities);
+            Assert.Null(Rows(Youtube)[0].DescribedAt);
             Assert.Equal(1, report.VideosPublished);
             Assert.False(report.HitTurnCap);
 
@@ -732,16 +739,16 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Publication
             // produces no backoff: the video stays due for ever. Without the per-lane refusal the
             // loop would spin at one yt-dlp call per turn until the 2000-turn cap — which is why
             // the assertions below are a turn count and a CALL count, not merely "it returned".
-            var source = Src(Youtube);
+            var source = Src(Arte);
             UpToDate(source);
-            AddVideo(Youtube, "one");
+            AddVideo(Arte, "one");
             _metadataForEveryVideo = Timeout();
 
             var report = await RunAsync(Config(source));
 
             Assert.Equal(2, report.Turns);
             Assert.False(report.HitTurnCap);
-            Assert.Equal([PlatformLane.Youtube], report.RefusedLanes);
+            Assert.Equal([PlatformLane.Arte], report.RefusedLanes);
 
             // One call for the whole pass. The lane is refused from the first abandon, so the
             // second turn must not even look at this source again.
@@ -749,7 +756,7 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Publication
 
             // The video is still due — nothing was written to make it wait. That is precisely why
             // the refusal has to come from the lane and not from the video's backoff.
-            Assert.Equal(0, Rows(Youtube)[0].MetadataAttempts);
+            Assert.Equal(0, Rows(Arte)[0].MetadataAttempts);
         }
 
         [Fact]
@@ -769,9 +776,9 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Publication
             // takes the video out of the selection until its metadata goes stale — the thirty-day
             // refresh is the retry. These assertions are a turn count and a CALL count, because
             // "it returned" would hold even while spinning.
-            var source = Src(Youtube);
+            var source = Src(Arte);
             UpToDate(source);
-            AddVideo(Youtube, "no-hls");
+            AddVideo(Arte, "no-hls");
             _metadataForEveryVideo = WithoutAManifest();
 
             var report = await RunAsync(Config(source));
@@ -784,11 +791,28 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Publication
             Assert.Single(_trace, t => t.StartsWith("metadata:", StringComparison.Ordinal));
 
             // Stamped, and not counted as a failure — nothing failed.
-            var row = Rows(Youtube)[0];
+            var row = Rows(Arte)[0];
             Assert.NotNull(row.DescribedAt);
             Assert.Equal(CallOutcome.None, row.DescribeResult);
             Assert.Equal(0, row.DescribeAttempts);
             Assert.NotNull(row.DescribeDetail);
+        }
+
+        [Fact]
+        public async Task FailedYouTubeListingDoesNotReconcileOrRemoveExistingItems()
+        {
+            var source = Src(Youtube);
+            var video = AddVideo(Youtube, "retained", fetched: true, described: true);
+            _ytDlp.GetPlaylistEntriesAsync(Youtube, Arg.Any<int?>(), Arg.Any<DateTimeOffset?>(),
+                Arg.Any<CancellationToken>(), Arg.Any<string>(), Arg.Any<string>())
+                .Returns((PlaylistInfo?)null);
+
+            var report = await RunAsync(Config(source));
+
+            Assert.Equal(0, report.VideosFetched);
+            Assert.Same(video, Assert.Single(Rows(Youtube)));
+            Assert.DoesNotContain(_trace, step => step.StartsWith("Checkup:", StringComparison.Ordinal));
+            _library.DidNotReceiveWithAnyArgs().DeleteItem(default!, default!, default);
         }
 
         [Fact]
@@ -868,30 +892,30 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Publication
         [Fact]
         public async Task ARefusedLane_DoesNotStopTheOtherLane_InTheSameTurn()
         {
-            // Without this test the "stop the whole pass" variant would pass too. A YouTube rate
+            // Without this test the "stop the whole pass" variant would pass too. A Twitch rate
             // limit during a first fill must not stop Arte, which is fine: the two platforms have
             // independent budgets.
             //
-            // The order matters and is not left to chance: YouTube has a planned listing, so it
+            // The order matters and is not left to chance: Twitch has a planned listing, so it
             // comes before Arte, which is only in the work list for its due videos. Arte is
             // therefore reached AFTER the refusal happened.
-            var youtube = Src(Youtube);
+            var twitch = Src(Twitch);
             var arte = Src(Arte);
-            AnnounceNewVideo(Youtube, "yt-one");
+            AnnounceNewVideo(Twitch, "yt-one");
             UpToDate(arte);
             var arteVideo = AddVideo(Arte, "arte-one");
 
-            _metadata[VideoUrlFor(Youtube, "yt-one")] = Timeout();
+            _metadata[VideoUrlFor(Twitch, "yt-one")] = Timeout();
 
-            var report = await RunAsync(Config(youtube, arte));
+            var report = await RunAsync(Config(twitch, arte));
 
-            Assert.Equal([PlatformLane.Youtube], report.RefusedLanes);
+            Assert.Equal([PlatformLane.Twitch], report.RefusedLanes);
             Assert.False(report.HitTurnCap);
 
             // Arte was worked after the refusal, in the same turn.
-            var refusal = FirstIndexOf("metadata:" + VideoUrlFor(Youtube, "yt-one"));
+            var refusal = FirstIndexOf("metadata:" + VideoUrlFor(Twitch, "yt-one"));
             var arteWave = FirstIndexOf("metadata:" + arteVideo.VideoUrl);
-            Assert.True(arteWave > refusal, "Arte must be worked after YouTube refused, not before.");
+            Assert.True(arteWave > refusal, "Arte must be worked after Twitch refused, not before.");
             Assert.Equal(1, report.VideosFetched);
             Assert.Contains($"{SourceStage.Wave}:{Arte}", _trace);
         }
@@ -1143,9 +1167,9 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Publication
             //
             // The enabled source has work of its own, and the two are alike in every other way: a
             // pass that worked neither of them would not satisfy this test either.
-            var enabled = Src(Youtube);
+            var enabled = Src(Alpha);
             UpToDate(enabled);
-            var worked = AddVideo(Youtube, "one");
+            var worked = AddVideo(Alpha, "one");
 
             var disabled = Src(Arte, enabled: false);
             UpToDate(disabled);
@@ -1170,9 +1194,9 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Publication
             // and would normally back it off; here the clock never advances it, so the work never
             // ends. The cap is the last line of defence, and reaching it must be reported rather
             // than passed over: it means the pass stopped with work left.
-            var source = Src(Youtube);
+            var source = Src(Arte);
             UpToDate(source);
-            AddVideo(Youtube, "one");
+            AddVideo(Arte, "one");
 
             // Every failure claims not to count against the video, so no backoff ever starts.
             _metadataForEveryVideo = Unavailable();
@@ -1204,9 +1228,9 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Publication
         {
             // A wave of zero videos would leave the stop test saying "there is work" for ever while
             // nothing could ever be done about it — one full turn of the loop per nothing.
-            var source = Src(Youtube);
+            var source = Src(Arte);
             UpToDate(source);
-            AddVideo(Youtube, "one");
+            AddVideo(Arte, "one");
 
             var config = Config(source);
             config.WaveSize = 0;
