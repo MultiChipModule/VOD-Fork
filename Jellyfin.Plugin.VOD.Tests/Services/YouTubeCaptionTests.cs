@@ -103,10 +103,10 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
             var track = new YouTubeCaption(new Uri(TimedText), CaptionKind.OriginalAutomatic);
             var cached = await cache.FetchAsync(VideoUrl, track, config, CancellationToken.None);
             Assert.Equal(expected, cached is not null);
-            Assert.Equal(cached, cache.Find(VideoUrl, config));
+            Assert.Equal(cached, cache.Find(VideoUrl, config, creator: false));
             if (cached is not null)
             {
-                Assert.Equal(body, File.ReadAllText(cached.Path));
+                Assert.Equal(body + "\n", File.ReadAllText(cached.Path));
                 Assert.Single(Directory.EnumerateFiles(_directory));
             }
         }
@@ -118,7 +118,7 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
             var config = new PluginConfiguration { CaptionCacheHours = 2, CaptionCacheMiB = 4 };
             var stale = cache.Store(VideoUrl, CaptionKind.Creator, Vtt, config);
             File.SetLastWriteTimeUtc(stale.Path, DateTime.UtcNow.AddHours(-3));
-            Assert.Null(cache.Find(VideoUrl, config));
+            Assert.Null(cache.Find(VideoUrl, config, creator: true));
             var first = cache.Store("first", CaptionKind.Automatic, Vtt + new string('a', 3 * 1024 * 1024), config);
             Assert.False(File.Exists(stale.Path));
             var second = cache.Store("second", CaptionKind.Automatic, Vtt + new string('b', 2 * 1024 * 1024), config);
@@ -133,32 +133,76 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
             var caption = cache.Store(VideoUrl, CaptionKind.OriginalAutomatic, Vtt, new PluginConfiguration());
             var video = new MediaStream { Index = 3, Type = MediaStreamType.Video, Codec = "h264", Height = 1080 };
             var audio = new MediaStream { Index = 5, Type = MediaStreamType.Audio, Codec = "aac" };
-            var streams = CaptionPlaybackFilter.UpdateStreams([video, audio], caption, cache)!;
+            var streams = CaptionPlaybackFilter.UpdateStreams([video, audio], [caption], cache)!;
 
             Assert.Same(video, streams[0]);
             Assert.Same(audio, streams[1]);
             var subtitle = Assert.Single(streams, stream => stream.Type == MediaStreamType.Subtitle);
             Assert.True(subtitle.IsExternal);
             Assert.True(subtitle.SupportsExternalStream);
-            Assert.Equal(6, subtitle.Index);
+            Assert.Equal(1001, subtitle.Index);
             Assert.Equal("eng", subtitle.Language);
             Assert.Equal("vtt", subtitle.Codec);
             Assert.Equal(caption.Path, subtitle.Path);
             Assert.Equal("English (Auto-generated)", subtitle.Title);
-            Assert.Null(CaptionPlaybackFilter.UpdateStreams(streams, caption, cache));
-            Assert.Equal([video, audio], CaptionPlaybackFilter.UpdateStreams(streams, null, cache));
+            Assert.Null(CaptionPlaybackFilter.UpdateStreams(streams, [caption], cache));
+            Assert.Equal([video, audio], CaptionPlaybackFilter.UpdateStreams(streams, [], cache));
         }
 
         [Fact]
-        public void PreservesExistingManualEnglishAndOtherLanguages()
+        public void BothTracksUseStableIndicesAndCreatorIsPreferred()
         {
             var cache = new CaptionCache(_directory);
-            var caption = cache.Store(VideoUrl, CaptionKind.OriginalAutomatic, Vtt, new PluginConfiguration());
-            var creator = new MediaStream { Index = 2, Type = MediaStreamType.Subtitle, Language = "en-GB" };
+            var config = new PluginConfiguration();
+            var automatic = cache.Store(VideoUrl, CaptionKind.OriginalAutomatic, Vtt, config);
+            var creator = cache.Store(VideoUrl, CaptionKind.Creator, Vtt, config);
+            var embedded = new MediaStream { Index = 2, Type = MediaStreamType.Subtitle, Language = "en-GB" };
             var french = new MediaStream { Index = 3, Type = MediaStreamType.Subtitle, Language = "fra" };
-            Assert.Null(CaptionPlaybackFilter.UpdateStreams([creator, french], caption, cache));
-            var previouslyManaged = CaptionPlaybackFilter.UpdateStreams([french], caption, cache)!;
-            Assert.Equal([french, creator], CaptionPlaybackFilter.UpdateStreams([.. previouslyManaged, creator], caption, cache));
+            var automaticOnly = CaptionPlaybackFilter.UpdateStreams([embedded, french], [automatic], cache)!;
+            Assert.Equal([embedded, french], automaticOnly.Take(2));
+            var both = CaptionPlaybackFilter.UpdateStreams(automaticOnly, [creator, automatic], cache)!;
+            Assert.Equal(3, both.Count);
+            Assert.Same(french, both[0]);
+            Assert.Equal("English (Creator-uploaded)", both[1].Title);
+            Assert.True(both[1].IsDefault);
+            Assert.False(both[2].IsDefault);
+            Assert.NotEqual(both[1].Index, both[2].Index);
+            Assert.Equal(automaticOnly[^1].Index, both[2].Index);
+            Assert.Equal(creator, cache.Find(VideoUrl, config, creator: true));
+            Assert.Equal(automatic, cache.Find(VideoUrl, config, creator: false));
+            Assert.Null(CaptionPlaybackFilter.UpdateStreams(both, [creator, automatic], cache));
+            var creatorOnly = CaptionPlaybackFilter.UpdateStreams(both, [creator], cache)!;
+            Assert.Equal(both[1].Index, creatorOnly[1].Index);
+            Assert.Equal([french], CaptionPlaybackFilter.UpdateStreams(creatorOnly, [], cache));
+            Assert.Null(CaptionPlaybackFilter.UpdateStreams([french], [], cache));
+        }
+
+        [Fact]
+        public void NormalizationKeepsCueTimingsAndLineBreaks()
+        {
+            const string styled = """
+                WEBVTT
+                X-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000
+
+                STYLE
+                ::cue { color: red; font-size: 200%; }
+
+                REGION
+                id:bottom
+
+                cue-001
+                00:00:01.205 --> 00:00:05.678 line:95% position:50% align:start
+                <v Creator><c.blue>Hi, &amp; welcome!</c>
+                <i>Second line.</i><00:00:03.000> More.
+
+                """;
+
+            var normalized = CaptionNormalization.PlainWebVtt(styled);
+            Assert.DoesNotContain("::cue", normalized, StringComparison.Ordinal);
+            Assert.DoesNotContain("position:", normalized, StringComparison.Ordinal);
+            Assert.DoesNotContain("REGION", normalized, StringComparison.Ordinal);
+            Assert.Contains("X-TIMESTAMP-MAP=MPEGTS:900000,LOCAL:00:00:00.000", normalized, StringComparison.Ordinal);
+            Assert.Contains("cue-001\n00:00:01.205 --> 00:00:05.678\nHi, &amp; welcome!\nSecond line.<00:00:03.000> More.", normalized, StringComparison.Ordinal);
         }
 
         [Fact]
@@ -207,6 +251,7 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
             var config = new PluginConfiguration();
             var cache = new CaptionCache(_directory);
             var caption = cache.Store("SLe8Ot4XTiM", CaptionKind.OriginalAutomatic, Vtt, config);
+            var creator = cache.Store("SLe8Ot4XTiM", CaptionKind.Creator, Vtt, config);
             using var filter = new CaptionPlaybackFilter(library, users, mediaSources, repository, database,
                 null!, cache, NullLogger<CaptionPlaybackFilter>.Instance);
 
@@ -214,7 +259,7 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
             foreach (var id in new[] { primary.Id, alternate.Id })
             {
                 repository.Received(1).SaveMediaStreams(id,
-                    Arg.Is<IReadOnlyList<MediaStream>>(tracks => tracks[0] == videoStream && tracks[1].Path == caption.Path),
+                    Arg.Is<IReadOnlyList<MediaStream>>(tracks => tracks[0] == videoStream && tracks[1].Path == creator.Path && tracks[2].Path == caption.Path),
                     CancellationToken.None);
             }
 

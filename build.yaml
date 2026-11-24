@@ -1,7 +1,7 @@
 ---
 name: "VOD"
 guid: "16bb0693-4248-478b-a1e5-a4508326245c"
-version: 5.0.1.0
+version: 5.0.2.0
 targetAbi: "12.1.0.0"
 framework: "net10.0"
 owner: "MultiChipModule (upstream bakeneko)"
@@ -13,6 +13,4 @@ category: "General"
 artifacts:
   - "Jellyfin.Plugin.VOD.dll"
 changelog: |-
-  - Offer creator-uploaded English and automatic English fallback as selectable WebVTT tracks.
-  - Cache caption files and require an authenticated user with access to the video for delivery.
-  - Use a concrete fallback font when the system sans-serif face has no glyphs.
+  - Offer independent creator-uploaded and automatic English tracks as plain native WebVTT.

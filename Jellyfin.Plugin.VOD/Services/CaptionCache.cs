@@ -34,12 +34,12 @@ namespace Jellyfin.Plugin.VOD.Services
             || (config.EnableAutomaticEnglishCaptions
                 && (kind != CaptionKind.Translated || config.AllowTranslatedEnglishCaptions));
 
-        internal CachedCaption? Find(string videoKey, PluginConfiguration config)
+        internal CachedCaption? Find(string videoKey, PluginConfiguration config, bool creator)
         {
             var cutoff = DateTime.UtcNow.AddHours(-Math.Clamp(config.CaptionCacheHours, 1, 720));
             foreach (var kind in Enum.GetValues<CaptionKind>())
             {
-                if (!IsEnabled(kind, config))
+                if ((kind == CaptionKind.Creator) != creator || !IsEnabled(kind, config))
                 {
                     continue;
                 }
@@ -74,7 +74,7 @@ namespace Jellyfin.Plugin.VOD.Services
                 return null;
             }
 
-            return Store(videoKey, caption.Kind, text, config);
+            return Store(videoKey, caption.Kind, CaptionNormalization.PlainWebVtt(text), config);
         }
 
         internal static bool IsWebVtt(string text) =>
@@ -113,7 +113,7 @@ namespace Jellyfin.Plugin.VOD.Services
         private string PathFor(string videoKey, CaptionKind kind)
         {
             var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(videoKey)));
-            return Path.Combine(DirectoryPath, string.Create(CultureInfo.InvariantCulture, $"{hash}-{kind}.vtt"));
+            return Path.Combine(DirectoryPath, string.Create(CultureInfo.InvariantCulture, $"{hash}-{kind}-plain.vtt"));
         }
 
         private void Prune(string keep, PluginConfiguration config)

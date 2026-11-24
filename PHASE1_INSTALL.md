@@ -51,3 +51,13 @@ Upstream `YtDlpService.ResolveAsync` printed only `manifest_url` and `url`. Both
 The baseline artwork test `Generate_DrawsTheCaption` failed because Skia resolved the generic `sans-serif` alias to an OpenAI Sans face with zero glyphs and measured `Arte` at zero width. A direct probe of DejaVu Sans resolved 6,196 glyphs and measured the string at 107 pixels at size 44. Artwork now falls back to DejaVu Sans when the initial face has zero glyphs. The original image comparison test is unchanged.
 
 The cloud proxy returned HTTP 403 for the live YouTube reproduction URL. The extraction template was verified with yt-dlp 2026.11.23 using offline metadata. All 988 tests passed in Release configuration, including the unchanged artwork test. Live caption timing, client subtitle selection, and target server compatibility remain part of the TrueNAS check above.
+
+## Upgrade to 5.0.2.0
+
+Install **VOD 5.0.2.0** from the existing fork repository and restart Jellyfin. Keep the existing executable paths and set **Preferred subtitle languages** to `en`. Keep automatic English captions enabled and translated English disabled for the requested setup. Back up the 5.0.1.0 binary directory and plugin data before upgrading. The fork retains the plugin GUID and database schema.
+
+Play a creator-captioned video that also offers original automatic English. Confirm that the player offers **English (Creator-uploaded)** and **English (Auto-generated)**, that both follow your Jellyfin appearance settings, and that switching, seeking and resuming preserve timing. The creator track is marked preferred in Jellyfin, which still applies the user's subtitle settings and remembered choices. Test an automatic-only video and one with no captions too.
+
+Previously, a creator track advertised by the YouTube HLS master could arrive as an embedded subtitle even though the automatic track used Jellyfin's external renderer. The fork now downloads both caption types separately when available and runs them through the same external WebVTT path. It preserves cue times and line breaks, and strips WebVTT presentation tags, positioning, and stylesheet blocks. Existing HLS English remains available when a normalized creator rendition cannot be retrieved before registration. Some YouTube videos can return an empty or unavailable timed-text response even when the manifest advertises captions.
+
+For rollback, stop Jellyfin and restore the backed-up 5.0.1.0 binary directory and its original metadata. Restart and play the video again so the older plugin can repopulate its subtitle stream metadata. The catalog also retains the 5.0.1.0 release and checksum.

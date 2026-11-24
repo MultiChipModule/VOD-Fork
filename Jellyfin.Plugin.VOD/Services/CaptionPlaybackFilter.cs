@@ -29,6 +29,7 @@ namespace Jellyfin.Plugin.VOD.Services
         CaptionCache cache,
         ILogger<CaptionPlaybackFilter> logger) : IDisposable
     {
+        private readonly PlaylistCache _missingTracks = new();
         private readonly SemaphoreSlim[] _locks = Enumerable.Range(0, 32).Select(_ => new SemaphoreSlim(1)).ToArray();
 
         internal async Task TryPrepareAsync(Guid itemId, Guid userId, PluginConfiguration config, CancellationToken cancellationToken)
@@ -89,15 +90,17 @@ namespace Jellyfin.Plugin.VOD.Services
             var descriptions = item.GetAllVersions()
                 .Where(version => string.Equals(version.GetProviderId("VOD"), vodId, StringComparison.Ordinal))
                 .Select(version => (version.Id, Streams: ReadStreams(version.Id))).ToArray();
-            var needsCaption = descriptions.Any(description => description.Streams.Count > 0
-                && !HasExistingEnglish(description.Streams, cache));
-            var caption = needsCaption
-                ? await FindCaptionAsync(videoKey, url, config, cancellationToken).ConfigureAwait(false)
-                : null;
+            if (!descriptions.Any(description => description.Streams.Count > 0))
+            {
+                return;
+            }
 
+            using var downloadBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var captions = await FindCaptionsAsync(videoKey, url, config, downloadBudget, cancellationToken)
+                .ConfigureAwait(false);
             foreach (var description in descriptions.Where(description => description.Streams.Count > 0))
             {
-                var updated = UpdateStreams(description.Streams, caption, cache);
+                var updated = UpdateStreams(description.Streams, captions, cache);
                 if (updated is not null)
                 {
                     streams.SaveMediaStreams(description.Id, updated, cancellationToken);
@@ -105,29 +108,60 @@ namespace Jellyfin.Plugin.VOD.Services
             }
         }
 
-        private async Task<CachedCaption?> FindCaptionAsync(
-            string videoKey, string url, PluginConfiguration config, CancellationToken cancellationToken)
+        private async Task<IReadOnlyList<CachedCaption>> FindCaptionsAsync(
+            string videoKey, string url, PluginConfiguration config, CancellationTokenSource downloadBudget,
+            CancellationToken cancellationToken)
         {
-            if (cache.Find(videoKey, config) is { } cached)
+            var creator = cache.Find(videoKey, config, creator: true);
+            var automatic = cache.Find(videoKey, config, creator: false);
+            var creatorKey = videoKey + ":creator";
+            var automaticKey = videoKey + (config.AllowTranslatedEnglishCaptions ? ":translated" : ":automatic");
+            var needCreator = creator is null && !_missingTracks.TryGet(creatorKey, out _);
+            var needAutomatic = config.EnableAutomaticEnglishCaptions && automatic is null
+                && !_missingTracks.TryGet(automaticKey, out _);
+            if (needCreator || needAutomatic)
             {
-                return cached;
+                var resolution = await ytDlp.ResolveAsync(url, StreamCacheKey.DefaultFormat, cancellationToken)
+                    .ConfigureAwait(false);
+                if (resolution is not null)
+                {
+                    downloadBudget.CancelAfter(TimeSpan.FromSeconds(5));
+                    if (needCreator)
+                    {
+                        creator = await FetchTrackAsync(creatorKey, videoKey,
+                            resolution.EnglishCaptions.Where(track => track.Kind == CaptionKind.Creator),
+                            config, downloadBudget.Token, cancellationToken).ConfigureAwait(false);
+                    }
+
+                    if (needAutomatic)
+                    {
+                        automatic = await FetchTrackAsync(automaticKey, videoKey,
+                            resolution.EnglishCaptions.Where(track => track.Kind != CaptionKind.Creator
+                                && CaptionCache.IsEnabled(track.Kind, config)),
+                            config, downloadBudget.Token, cancellationToken).ConfigureAwait(false);
+                    }
+                }
             }
 
-            var resolution = await ytDlp.ResolveAsync(url, StreamCacheKey.DefaultFormat, cancellationToken).ConfigureAwait(false);
-            if (resolution is null)
+            return new[] { creator, automatic }.OfType<CachedCaption>()
+                .Where(track => File.Exists(track.Path)).ToArray();
+        }
+
+        private async Task<CachedCaption?> FetchTrackAsync(
+            string missingKey, string videoKey, IEnumerable<YouTubeCaption> candidates, PluginConfiguration config,
+            CancellationToken budget, CancellationToken cancellationToken)
+        {
+            var tracks = candidates.GroupBy(track => track.Kind).SelectMany(group => group.Take(2)).ToArray();
+            if (tracks.Length == 0)
             {
-                return null;
+                _missingTracks.Set(missingKey, string.Empty);
             }
 
-            // Keep caption HTTP work within a shared playback budget.
-            using var downloadBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            downloadBudget.CancelAfter(TimeSpan.FromSeconds(5));
-            foreach (var track in resolution.EnglishCaptions.Where(track => CaptionCache.IsEnabled(track.Kind, config))
-                         .GroupBy(track => track.Kind).SelectMany(group => group.Take(2)))
+            foreach (var track in tracks)
             {
                 try
                 {
-                    if (await cache.FetchAsync(videoKey, track, config, downloadBudget.Token).ConfigureAwait(false) is { } result)
+                    if (await cache.FetchAsync(videoKey, track, config, budget).ConfigureAwait(false) is { } result)
                     {
                         return result;
                     }
@@ -138,7 +172,7 @@ namespace Jellyfin.Plugin.VOD.Services
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
-                    return null;
+                    break;
                 }
             }
 
@@ -146,43 +180,65 @@ namespace Jellyfin.Plugin.VOD.Services
         }
 
         internal static IReadOnlyList<MediaStream>? UpdateStreams(
-            IReadOnlyList<MediaStream> existing, CachedCaption? caption, CaptionCache cache)
+            IReadOnlyList<MediaStream> existing, IReadOnlyList<CachedCaption> captions, CaptionCache cache)
         {
+            const int CreatorIndex = 1000;
             var previous = existing.Where(stream => stream.IsExternal && cache.Owns(stream.Path)).ToArray();
-            if (HasExistingEnglish(existing, cache))
+            var untouched = existing.Except(previous).ToList();
+            var creator = captions.FirstOrDefault(track => track.Kind == CaptionKind.Creator);
+            var hasLocalEnglish = untouched.Any(stream => stream.IsExternal && IsEnglishSubtitle(stream));
+            if (creator is not null && !hasLocalEnglish)
             {
-                caption = null;
+                // The selected HLS master can advertise the same YouTube English track. Once
+                // a normalized copy is available, offer that copy in PlaybackInfo instead.
+                untouched.RemoveAll(stream => !stream.IsExternal && IsEnglishSubtitle(stream));
             }
 
-            if (caption is null && previous.Length == 0
-                || previous.Length == 1 && string.Equals(previous[0].Path, caption?.Path, StringComparison.Ordinal))
+            var result = new List<MediaStream>(untouched);
+            foreach (var caption in captions)
             {
-                return null;
-            }
-
-            var updated = existing.Except(previous).ToList();
-            if (caption is not null)
-            {
-                updated.Add(new MediaStream
+                var isCreator = caption.Kind == CaptionKind.Creator;
+                if (isCreator && hasLocalEnglish)
                 {
-                    Index = updated.Count == 0 ? 0 : updated.Max(stream => stream.Index) + 1,
+                    continue;
+                }
+
+                // Reserve a slot for each kind so adding a creator track never renumbers an
+                // active or remembered automatic track. Keep ordinary FFmpeg indices intact.
+                var index = isCreator ? CreatorIndex : CreatorIndex + 1;
+                while (untouched.Any(stream => stream.Index == index))
+                {
+                    index += 2;
+                }
+
+                var prior = previous.FirstOrDefault(stream => stream.Index == index
+                    && string.Equals(stream.Path, caption.Path, StringComparison.Ordinal)
+                    && stream.IsDefault == isCreator);
+                result.Add(prior ?? new MediaStream
+                {
+                    Index = index,
                     Type = MediaStreamType.Subtitle,
                     Codec = "vtt",
                     Language = "eng",
                     Title = caption.Kind switch
                     {
-                        CaptionKind.Creator => "English",
+                        CaptionKind.Creator => "English (Creator-uploaded)",
                         CaptionKind.Translated => "English (Auto-translated)",
                         _ => "English (Auto-generated)"
                     },
+                    IsDefault = isCreator,
                     IsExternal = true,
                     SupportsExternalStream = true,
                     Path = caption.Path
                 });
             }
 
-            return updated;
+            return existing.SequenceEqual(result) ? null : result;
         }
+
+        private static bool IsEnglishSubtitle(MediaStream stream) =>
+            stream.Type == MediaStreamType.Subtitle && stream.Language is { } language
+            && YouTubeCaption.IsEnglish(language);
 
         internal bool IsManagedSubtitle(Guid mediaSourceId, int index) =>
             ReadStreams(mediaSourceId).Any(stream => stream.Index == index
@@ -195,11 +251,6 @@ namespace Jellyfin.Plugin.VOD.Services
                 && library.GetItemById<BaseItem>(itemId, user) is Video
                 && (mediaSourceId == itemId || library.GetItemById<BaseItem>(mediaSourceId, user) is Video);
         }
-
-        private static bool HasExistingEnglish(IEnumerable<MediaStream> existing, CaptionCache cache) =>
-            existing.Any(stream => stream.Type == MediaStreamType.Subtitle
-                && stream.Language is { } language && YouTubeCaption.IsEnglish(language)
-                && !(stream.IsExternal && cache.Owns(stream.Path)));
 
         private IReadOnlyList<MediaStream> ReadStreams(Guid id) =>
             streams.GetMediaStreams(new MediaStreamQuery { ItemId = id });
