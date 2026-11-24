@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.VOD.Services.Sync;
@@ -14,8 +15,7 @@ namespace Jellyfin.Plugin.VOD.Services
     /// Resolves a page URL into a directly playable stream URL by shelling out to yt-dlp.
     /// </summary>
     /// <remarks>
-    /// Asks yt-dlp for <c>%(manifest_url)s</c> then <c>%(url)s</c>. The manifest URL is an HLS master
-    /// playlist that carries video, audio and subtitles together; neither YouTube nor Arte still publishes
+    /// Reads the selected stream, HLS master and YouTube caption metadata from the same yt-dlp extraction; neither YouTube nor Arte still publishes
     /// a muxed progressive format, so the bare URL means video without audio.
     /// </remarks>
     public sealed partial class YtDlpService : IYtDlpService
@@ -26,6 +26,7 @@ namespace Jellyfin.Plugin.VOD.Services
         private readonly CookieJar _cookies;
         private readonly YtDlpThrottle _throttle;
         private readonly ILogger<YtDlpService> _logger;
+        private readonly PlaylistCache _resolutions = new();
 
         /// <summary>Initializes a new instance of the <see cref="YtDlpService"/> class.</summary>
         /// <param name="cookies">The cookie jar, one working copy per lane.</param>
@@ -52,6 +53,13 @@ namespace Jellyfin.Plugin.VOD.Services
             ArgumentException.ThrowIfNullOrWhiteSpace(pageUrl);
             ArgumentException.ThrowIfNullOrWhiteSpace(format);
 
+            var youtube = YouTubeCaption.IsYouTubePage(pageUrl);
+            var resolutionKey = $"{format}|{pageUrl}";
+            if (youtube && _resolutions.TryGet(resolutionKey, out var cached))
+            {
+                return ParseYouTubeResolution(cached);
+            }
+
             var startInfo = BuildBaseStartInfo();
             using var cookies = await _cookies.AcquireAsync(PlatformLane.Playback, cancellationToken).ConfigureAwait(false);
             ApplyCookies(startInfo, cookies);
@@ -61,10 +69,18 @@ namespace Jellyfin.Plugin.VOD.Services
             startInfo.ArgumentList.Add("--no-playlist");
             startInfo.ArgumentList.Add("-f");
             startInfo.ArgumentList.Add(format);
-            startInfo.ArgumentList.Add("--print");
-            startInfo.ArgumentList.Add("%(manifest_url)s");
-            startInfo.ArgumentList.Add("--print");
-            startInfo.ArgumentList.Add("%(url)s");
+            if (youtube)
+            {
+                startInfo.ArgumentList.Add("--print");
+                startInfo.ArgumentList.Add("%(.{manifest_url,url,subtitles,automatic_captions})j");
+            }
+            else
+            {
+                startInfo.ArgumentList.Add("--print");
+                startInfo.ArgumentList.Add("%(manifest_url)s");
+                startInfo.ArgumentList.Add("--print");
+                startInfo.ArgumentList.Add("%(url)s");
+            }
             startInfo.ArgumentList.Add(pageUrl);
 
             var sw = Stopwatch.StartNew();
@@ -74,6 +90,18 @@ namespace Jellyfin.Plugin.VOD.Services
 
             if (stdout is null)
                 return null;
+
+            if (youtube)
+            {
+                var result = ParseYouTubeResolution(stdout);
+                if (result is not null)
+                {
+                    _resolutions.Set(resolutionKey, stdout);
+                    LogResolved(pageUrl, result.IsManifest, sw.ElapsedMilliseconds);
+                }
+
+                return result;
+            }
 
             var lines = stdout.Split('\n',
                 StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -90,6 +118,25 @@ namespace Jellyfin.Plugin.VOD.Services
 
             LogResolved(pageUrl, hasManifest, sw.ElapsedMilliseconds);
             return new StreamResolution(resolved, hasManifest);
+        }
+
+        internal static StreamResolution? ParseYouTubeResolution(string json)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(json);
+                var root = document.RootElement;
+                var manifest = YouTubeCaption.ReadString(root, "manifest_url");
+                var url = manifest ?? YouTubeCaption.ReadString(root, "url");
+                return url is null ? null : new StreamResolution(url, manifest is not null)
+                {
+                    EnglishCaptions = YouTubeCaption.ReadEnglish(root)
+                };
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
         }
 
         /// <summary>

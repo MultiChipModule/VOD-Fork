@@ -1,68 +1,52 @@
-name: '🚀 Publish Plugin'
+name: Publish VOD-Fork
 
-# Runs on a published release only: the assets are uploaded to that release, so there is nothing to
-# publish to without one.
 on:
   release:
-    types:
-      - released
+    types: [published]
+
+concurrency:
+  group: vod-fork-release
+  cancel-in-progress: false
 
 jobs:
   publish:
+    if: github.repository == 'MultiChipModule/VOD-Fork'
     runs-on: ubuntu-latest
     permissions:
-      # Upload the release assets and push the updated manifest.json to main.
       contents: write
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: 10.0.x
-
-      - name: Setup jprm
+      - name: Check release tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          pip install --user jprm
-
-      - name: Build Jellyfin Plugin
-        uses: oddstr13/jellyfin-plugin-repository-manager@9497a0a499416cc572ed2e07a391d9f943a37b4d # v1.1.1
-        id: jprm
-        with:
-          dotnet-target: net10.0
-          output: ./artifacts
-
-      - name: Prepare GH Release Assets
-        run: |-
-          mkdir ./upload
-          cp ${{ steps.jprm.outputs.artifact }} ./upload
-          for file in ./upload/*; do
-            md5sum ${file#./} >> ${file%.*}.md5
-            sha256sum ${file#./} >> ${file%.*}.sha256
-          done
-          ls -l
-
-      - name: Upload GH Release Assets
-        id: release
-        uses: shogo82148/actions-upload-release-asset@8482bd769644976d847e96fb4b9354228885e7b4 # v1.7.8
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          overwrite: true
-          asset_path: ./upload/*
-
-      - name: Update manifest
+          version=$(python3 -c 'from xml.etree.ElementTree import parse; print(parse("Directory.Build.props").findtext(".//Version"))')
+          test "$RELEASE_TAG" = "v$version"
+          git merge-base --is-ancestor HEAD origin/main
+      - run: dotnet test --configuration Release
+      - run: dotnet publish Jellyfin.Plugin.VOD --configuration Release --no-restore --output publish
+      - name: Package and upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TIME: ${{ github.event.release.published_at }}
         run: |
-          jprm repo add --plugin-url $(echo "${{ steps.release.outputs.browser_download_url }}" | sed -n 3p) ./manifest.json ./upload/*.zip
-
-      # A plain push: if main moved while this ran, failing loudly beats overwriting what landed.
-      - name: Commit manifest
+          python3 scripts/package-release.py publish "$RUNNER_TEMP/vod-release" --timestamp "$RELEASE_TIME"
+          (cd "$RUNNER_TEMP/vod-release" && sha256sum -c ./*.sha256 && unzip -t ./*.zip)
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP"/vod-release/*.zip "$RUNNER_TEMP"/vod-release/*.sha256
+      - name: Publish the repository manifest
         run: |
-          git config user.name "GitHub Actions"
-          git config user.email actions@github.com
-          git pull --ff-only
-          git add ./manifest.json
-          git commit -m "chore(release): update manifest.json"
-          git push origin main
+          git switch --create update-vod-manifest origin/main
+          cp "$RUNNER_TEMP/vod-release/manifest.json" manifest.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add manifest.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Publish VOD-Fork repository manifest"
+            git push origin HEAD:main
+          fi

@@ -90,6 +90,18 @@ namespace Jellyfin.Plugin.VOD.Configuration
         [SuppressMessage("Performance", "CA1819:Properties should not return arrays", Justification = "string[] is required for Jellyfin XML serialization of BasePluginConfiguration.")]
         public string[] PreferredSubtitleLanguages { get; set; } = [];
 
+        /// <summary>Gets or sets whether to offer YouTube's automatically generated English captions.</summary>
+        public bool EnableAutomaticEnglishCaptions { get; set; } = true;
+
+        /// <summary>Gets or sets whether automatically translated English may be used as a last resort.</summary>
+        public bool AllowTranslatedEnglishCaptions { get; set; }
+
+        /// <summary>Gets or sets the lifetime, in hours, of downloaded YouTube captions.</summary>
+        public int CaptionCacheHours { get; set; } = 24;
+
+        /// <summary>Gets or sets the size limit, in MiB, of the persistent caption cache.</summary>
+        public int CaptionCacheMiB { get; set; } = 64;
+
         /// <summary>
         /// Gets or sets how many yt-dlp calls a minute background work may make to <b>one</b>
         /// platform. Sync, stream descriptions and the live probe share this budget, per platform.

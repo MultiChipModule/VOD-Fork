@@ -1,10 +1,10 @@
 ---
 name: "VOD"
 guid: "16bb0693-4248-478b-a1e5-a4508326245c"
-version: 5
+version: 5.0.1.0
 targetAbi: "12.1.0.0"
 framework: "net10.0"
-owner: "bakeneko"
+owner: "MultiChipModule (upstream bakeneko)"
 overview: "Virtual VOD channel/playlist library via yt-dlp"
 description: >
   Follow YouTube, Twitch and other online channels from Jellyfin: their videos appear in a library and are streamed on demand through yt-dlp, with nothing downloaded to disk.
@@ -13,10 +13,6 @@ category: "General"
 artifacts:
   - "Jellyfin.Plugin.VOD.dll"
 changelog: |-
-  - YouTube videos now play on Android and TV without crashing: trailing SEI NAL units are stripped.
-  - The database is rebuilt on first start: every video is re-fetched from its platform, so expect a long first run. Your watch history reattaches as each video comes back.
-  - A run now finishes one source before moving to the next, instead of leaving every source half-resolved.
-  - Failures carry the platform's own explanation instead of the word "Failed".
-  - A video that keeps failing is retried further and further apart, so one broken video can no longer get you rate-limited.
-  - Each source gets a detail panel: its five stages, what happened to each video, and buttons to retry one or all of them.
-  - The page warns you when your cookie session has expired, or when a setting would silently stop all listing.
+  - Offer creator-uploaded English and automatic English fallback as selectable WebVTT tracks.
+  - Cache caption files and require an authenticated user with access to the video for delivery.
+  - Use a concrete fallback font when the system sans-serif face has no glyphs.

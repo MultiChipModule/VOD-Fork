@@ -11,6 +11,7 @@ using Jellyfin.Plugin.VOD.Services.Sync;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Plugins;
 using MediaBrowser.Model.Tasks;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -45,6 +46,10 @@ namespace Jellyfin.Plugin.VOD
             serviceCollection.AddSingleton<YtDlpService>();
             serviceCollection.AddSingleton<PlaylistCache>();
             serviceCollection.AddSingleton<SubtitleTokens>();
+            serviceCollection.AddSingleton(_ => new CaptionCache(
+                Path.Combine(Plugin.Instance!.EnsureDataFolder(), "subtitles")));
+            serviceCollection.AddSingleton<CaptionPlaybackFilter>();
+            serviceCollection.Configure<MvcOptions>(options => options.Filters.Add(new CaptionPlaybackDispatch()));
             serviceCollection.AddSingleton<MediaStreamWriter>();
             serviceCollection.AddSingleton<StreamDescriber>();
 

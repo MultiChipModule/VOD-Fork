@@ -78,7 +78,12 @@ namespace Jellyfin.Plugin.VOD.Imaging
                 "sans-serif", SKFontStyleWeight.Bold, SKFontStyleWidth.Normal, SKFontStyleSlant.Upright)
                 ?? SKTypeface.Default;
 
-            using var font = new SKFont(typeface, 44f);
+            // Some Fontconfig aliases resolve to a face Skia cannot decode (zero glyphs).
+            // A concrete sans-serif family keeps artwork captions visible on those hosts.
+            using var fallback = typeface.GlyphCount == 0
+                ? SKTypeface.FromFamilyName("DejaVu Sans", SKFontStyle.Bold)
+                : null;
+            using var font = new SKFont(fallback ?? typeface, 44f);
             using var paint = new SKPaint { Color = SKColors.White, IsAntialias = true };
 
             // Long channel names are common, so the size is reduced rather than the text clipped.

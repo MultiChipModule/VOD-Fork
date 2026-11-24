@@ -244,9 +244,26 @@
                                placeholder="en, fr" />
                         <div class="fieldDescription">
                             Comma-separated BCP-47 language prefixes (e.g. <code>en, fr</code>).
-                            Matching subtitle tracks are included in HLS masters.
-                            Leave empty to include no subtitles.
+                            Matching subtitle tracks are included in HLS masters. Leave empty to keep all available HLS subtitles.
+                            YouTube English caption fallback is configured separately.
                         </div>
+                    </div>
+
+                    <label class="checkboxContainer">
+                        <input is="emby-checkbox" type="checkbox" id="enableAutomaticEnglishCaptions" />
+                        <span>Enable YouTube automatic English captions</span>
+                    </label>
+                    <label class="checkboxContainer">
+                        <input is="emby-checkbox" type="checkbox" id="allowTranslatedEnglishCaptions" />
+                        <span>Allow automatically translated English as a fallback</span>
+                    </label>
+                    <div class="inputContainer">
+                        <label class="inputLabel" for="captionCacheHours">YouTube caption cache lifetime (hours)</label>
+                        <input is="emby-input" type="number" id="captionCacheHours" min="1" max="720" required />
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel" for="captionCacheMiB">YouTube caption cache size (MiB)</label>
+                        <input is="emby-input" type="number" id="captionCacheMiB" min="4" max="1024" required />
                     </div>
 
                     <div id="libraryAlert"
@@ -632,6 +649,12 @@
                                 (config.PreferredAudioLanguages || []).join(', ');
                             document.querySelector('#preferredSubtitleLanguages').value =
                                 (config.PreferredSubtitleLanguages || []).join(', ');
+                            document.querySelector('#enableAutomaticEnglishCaptions').checked =
+                                config.EnableAutomaticEnglishCaptions !== false;
+                            document.querySelector('#allowTranslatedEnglishCaptions').checked =
+                                config.AllowTranslatedEnglishCaptions === true;
+                            document.querySelector('#captionCacheHours').value = config.CaptionCacheHours || 24;
+                            document.querySelector('#captionCacheMiB').value = config.CaptionCacheMiB || 64;
                             document.querySelector('#useReleaseDateAsDateAdded').checked =
                                 config.UseReleaseDateAsDateAdded || false;
                             document.getElementById('sourcesBody').innerHTML = '';
@@ -681,6 +704,12 @@
                                 .split(',').map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
                             config.PreferredSubtitleLanguages = document.querySelector('#preferredSubtitleLanguages').value
                                 .split(',').map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
+                            config.EnableAutomaticEnglishCaptions =
+                                document.querySelector('#enableAutomaticEnglishCaptions').checked;
+                            config.AllowTranslatedEnglishCaptions =
+                                document.querySelector('#allowTranslatedEnglishCaptions').checked;
+                            config.CaptionCacheHours = Number(document.querySelector('#captionCacheHours').value);
+                            config.CaptionCacheMiB = Number(document.querySelector('#captionCacheMiB').value);
                             config.UseReleaseDateAsDateAdded =
                                 document.querySelector('#useReleaseDateAsDateAdded').checked;
                             var sources = collectSources();

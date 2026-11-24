@@ -11,8 +11,10 @@ using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Controller.Persistence;
 using MediaBrowser.Model.Tasks;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using NSubstitute;
 using Xunit;
 
@@ -27,9 +29,8 @@ namespace Jellyfin.Plugin.VOD.Tests
     /// compile error: it surfaces at startup as a plugin that loads and then does nothing, which
     /// is the hardest failure of this rework to notice and the cheapest to prevent.
     /// <para>
-    /// The two registrations that reach <c>Plugin.Instance</c> — the database path and the artwork
-    /// folder — are replaced here, because there is no plugin instance in a unit test. Everything
-    /// else is resolved as the server would resolve it.
+    /// The storage registrations that reach <c>Plugin.Instance</c> are replaced for these tests.
+    /// Everything else is resolved as the server would resolve it.
     /// </para>
     /// </remarks>
     public sealed class PluginServiceRegistratorTests
@@ -43,6 +44,8 @@ namespace Jellyfin.Plugin.VOD.Tests
             services.AddHttpClient();
             services.AddSingleton(Substitute.For<IServerConfigurationManager>());
             services.AddSingleton(Substitute.For<ILibraryManager>());
+            services.AddSingleton(Substitute.For<IUserManager>());
+            services.AddSingleton(Substitute.For<IMediaSourceManager>());
             services.AddSingleton(Substitute.For<IMediaStreamRepository>());
             services.AddSingleton(Substitute.For<IMediaEncoder>());
             services.AddSingleton(Substitute.For<IServerApplicationHost>());
@@ -50,9 +53,10 @@ namespace Jellyfin.Plugin.VOD.Tests
             new PluginServiceRegistrator().RegisterServices(
                 services, Substitute.For<IServerApplicationHost>());
 
-            // The two Plugin.Instance-dependent factories. Registered last, so these win.
+            // The Plugin.Instance-dependent storage factories. Registered last, so these win.
             services.AddSingleton(Substitute.For<IVodDatabase>());
             services.AddSingleton(new ArtworkStore(System.IO.Path.GetTempPath()));
+            services.AddSingleton(new CaptionCache(System.IO.Path.GetTempPath()));
 
             return services.BuildServiceProvider(new ServiceProviderOptions
             {
@@ -61,6 +65,15 @@ namespace Jellyfin.Plugin.VOD.Tests
                 ValidateOnBuild = true,
                 ValidateScopes = true,
             });
+        }
+
+        [Fact]
+        public void CaptionPlaybackHookIsRegisteredInMvc()
+        {
+            using var provider = Build();
+            Assert.NotNull(provider.GetRequiredService<CaptionPlaybackFilter>());
+            var options = provider.GetRequiredService<IOptions<MvcOptions>>().Value;
+            Assert.Single(options.Filters.OfType<CaptionPlaybackDispatch>());
         }
 
         [Fact]
