@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "5.1.0.0",
+                "changelog": "Add an opt-in native channel-first YouTube library with ordered playlists and hide synthetic episode numbers.",
+                "targetAbi": "12.1.0.0",
+                "timestamp": "2026-11-24T22:26:58Z",
+                "sourceUrl": "https://github.com/MultiChipModule/VOD-Fork/releases/download/v5.1.0.0/vod-fork_5.1.0.0.zip",
+                "checksum": "bfd8983661ab7d81114f1f3464b96fca"
+            },
+            {
                 "version": "5.0.2.0",
                 "changelog": "Offer creator-uploaded and automatic English together as plain native WebVTT tracks.",
                 "targetAbi": "12.1.0.0",
