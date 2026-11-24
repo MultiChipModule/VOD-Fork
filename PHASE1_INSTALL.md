@@ -30,13 +30,13 @@ The fallback is fetched on authenticated PlaybackInfo requests and cached as Web
 
 ## Install from the catalog after publication
 
-The fork's **Publish VOD-Fork** workflow runs when a GitHub Release is published. Push this source to the fork's `main`, then publish release tag `v5.0.1.0` from that commit. After the workflow uploads the asset and updates `main`, add this repository in **Dashboard → Plugins → Repositories**:
+The fork builds, tests, and packages commits on `main`. To publish version 5.0.1.0, push tag `v5.0.1.0` from the matching commit on `main`. You can also run **Publish VOD-Fork** manually with an existing version tag. The workflow runs the full Release suite and verifies the ZIP before creating the GitHub Release. After it uploads the assets and updates `main`, add this repository in **Dashboard → Plugins → Repositories**:
 
 ```text
 https://raw.githubusercontent.com/MultiChipModule/VOD-Fork/main/manifest.json
 ```
 
-Select **VOD 5.0.1.0** from the catalog and restart. The draft repository manifest stays empty until a ZIP with a matching checksum is hosted. The CI build also emits an Actions artifact for manual testing. If branch protection blocks the workflow's manifest commit, publish the generated manifest through the fork's normal review process using the already uploaded release ZIP and its matching metadata.
+Select **VOD 5.0.1.0** from the catalog and restart. The draft repository manifest stays empty until a ZIP with a matching checksum is hosted. The CI build also emits an Actions artifact for manual testing. If branch protection blocks the workflow's manifest commit, publish the generated manifest with a direct commit to the fork's `main` using the already uploaded release ZIP and its matching metadata.
 
 ## Roll back
 

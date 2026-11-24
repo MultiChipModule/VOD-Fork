@@ -1,8 +1,14 @@
 name: Publish VOD-Fork
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag (for example, v5.0.1.0)
+        required: true
+        type: string
 
 concurrency:
   group: vod-fork-release
@@ -18,29 +24,34 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref_name }}
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: 10.0.x
       - name: Check release tag
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           version=$(python3 -c 'from xml.etree.ElementTree import parse; print(parse("Directory.Build.props").findtext(".//Version"))')
           test "$RELEASE_TAG" = "v$version"
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
           git merge-base --is-ancestor HEAD origin/main
       - run: dotnet test --configuration Release
       - run: dotnet publish Jellyfin.Plugin.VOD --configuration Release --no-restore --output publish
-      - name: Package and upload
+      - name: Build and validate release assets
+        run: |
+          python3 scripts/package-release.py publish "$RUNNER_TEMP/vod-release" --timestamp "$(git show -s --format=%cI)"
+          (cd "$RUNNER_TEMP/vod-release" && sha256sum -c ./*.sha256 && unzip -t ./*.zip)
+      - name: Publish verified release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          RELEASE_TIME: ${{ github.event.release.published_at }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          python3 scripts/package-release.py publish "$RUNNER_TEMP/vod-release" --timestamp "$RELEASE_TIME"
-          (cd "$RUNNER_TEMP/vod-release" && sha256sum -c ./*.sha256 && unzip -t ./*.zip)
-          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP"/vod-release/*.zip "$RUNNER_TEMP"/vod-release/*.sha256
+          gh release create "$RELEASE_TAG" "$RUNNER_TEMP"/vod-release/*.zip "$RUNNER_TEMP"/vod-release/*.sha256 \
+            --verify-tag --title "VOD-Fork ${RELEASE_TAG#v}" --generate-notes
       - name: Publish the repository manifest
         run: |
+          git fetch origin main
           git switch --create update-vod-manifest origin/main
           cp "$RUNNER_TEMP/vod-release/manifest.json" manifest.json
           git config user.name "github-actions[bot]"
