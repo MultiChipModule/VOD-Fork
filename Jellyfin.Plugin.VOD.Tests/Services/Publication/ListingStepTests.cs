@@ -167,6 +167,33 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Publication
         // ── Entry cap sent to the seam ────────────────────────────────────────────────────────
 
         [Fact]
+        public async Task KnownExpiredUploadDatesSkipMetadataQueueing()
+        {
+            var planned = FullPlanned();
+            planned.Source.RetentionDays = 100;
+            var db = Substitute.For<IVodDatabase>();
+            var ytDlp = Substitute.For<IYtDlpService>();
+            db.GetVideosBySource(SourceUrl).Returns([]);
+            ytDlp.GetPlaylistEntriesAsync(SourceUrl, 100, null, Arg.Any<CancellationToken>(),
+                Arg.Any<string?>(), Arg.Any<string?>()).Returns(
+                new PlaylistInfo
+                {
+                    Entries =
+                    [
+                        new PlaylistEntry { Id = "expired", UploadDate = DateOnly.FromDateTime(Now.UtcDateTime.AddDays(-101)) },
+                        new PlaylistEntry { Id = "boundary", UploadDate = DateOnly.FromDateTime(Now.UtcDateTime.AddDays(-100)) },
+                        new PlaylistEntry { Id = "unknown" }
+                    ]
+                });
+
+            await Make(db, ytDlp).RunAsync(planned, Config(), Now, default);
+
+            db.DidNotReceive().UpsertVideo(Arg.Is<VideoRecord>(row => row.NativeId == "expired"));
+            db.Received(1).UpsertVideo(Arg.Is<VideoRecord>(row => row.NativeId == "boundary"));
+            db.Received(1).UpsertVideo(Arg.Is<VideoRecord>(row => row.NativeId == "unknown"));
+        }
+
+        [Fact]
         public async Task ShortListing_RequestsExactly30Entries()
         {
             // One YouTube page is 30 entries. Requesting exactly 30 means one HTTP round-trip;

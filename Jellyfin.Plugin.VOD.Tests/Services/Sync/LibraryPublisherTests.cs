@@ -18,6 +18,7 @@ using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Playlists;
 using MediaBrowser.Model.Configuration;
 using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -51,6 +52,44 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Sync
             _publisher = new LibraryPublisher(
                 _library, _db, new ArtworkStore(Path.Combine(Path.GetTempPath(), "vod-tests-artwork")),
                 _localizer, NullLogger<LibraryPublisher>.Instance);
+        }
+
+        [Fact]
+        public async Task NativeCatalogCreatesOrderedPlaylistsWithoutCreatingPlaybackItems()
+        {
+            var root = new Folder { Id = Guid.NewGuid() };
+            var channelId = Guid.NewGuid();
+            var uploadsId = Guid.NewGuid();
+            var playlistId = Guid.NewGuid();
+            var first = Guid.NewGuid();
+            var second = Guid.NewGuid();
+            var channelKey = $"vod-youtube:{root.Id:N}:stable";
+            _library.GetNewItemId(channelKey, typeof(Folder)).Returns(channelId);
+            _library.GetNewItemId($"{channelKey}:uploads", typeof(Playlist)).Returns(uploadsId);
+            _library.GetNewItemId($"{channelKey}:playlist", typeof(Playlist)).Returns(playlistId);
+            _library.GetItemList(Arg.Any<InternalItemsQuery>()).Returns([]);
+
+            await _publisher.PublishChannelCatalogAsync(root,
+                [new ChannelNode("stable", "Creator", null, null,
+                    [new PlaylistNode("uploads", "Videos", null, null, [first, second], IsUploads: true),
+                     new PlaylistNode("playlist", "Original playlist", null, "Description", [second, first])])],
+                CancellationToken.None);
+
+            var entities = _library.ReceivedCalls()
+                .Where(call => call.GetMethodInfo().Name == nameof(ILibraryManager.CreateItem))
+                .Select(call => (BaseItem)call.GetArguments()[0]!).ToArray();
+            Assert.Equal(3, entities.Length);
+            Assert.Empty(entities.OfType<Video>());
+            Assert.Equal(root.Id, Assert.Single(entities, item => item.Id == channelId).ParentId);
+            var uploads = Assert.IsType<Playlist>(Assert.Single(entities, item => item.Id == uploadsId));
+            var playlist = Assert.IsType<Playlist>(Assert.Single(entities, item => item.Id == playlistId));
+            Assert.Equal(channelId, uploads.ParentId);
+            Assert.Equal(channelId, playlist.ParentId);
+            Assert.Equal(new Guid?[] { first, second }, uploads.LinkedChildren.Select(link => link.ItemId));
+            Assert.Equal(new Guid?[] { second, first }, playlist.LinkedChildren.Select(link => link.ItemId));
+            Assert.True(uploads.IsPreSorted);
+            Assert.Equal("Original playlist", playlist.Name);
+            Assert.Equal("Description", playlist.Overview);
         }
 
         [Fact]

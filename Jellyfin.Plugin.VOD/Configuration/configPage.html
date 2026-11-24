@@ -273,6 +273,17 @@
                          style="display:none;margin:1em 0;padding:8px 12px;border-radius:4px;
                                 background:#7a5a1f;color:#fff"></div>
 
+                    <div class="inputContainer">
+                        <label class="inputLabel" for="youTubeChannelLibraryName">YouTube channel library (mixed)</label>
+                        <input id="youTubeChannelLibraryName" is="emby-input" type="text" />
+                        <div class="fieldDescription">Optional separate library for channel folders and ordered native playlists.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel" for="youTubeExcludedPlaylistIds">Excluded YouTube playlist IDs</label>
+                        <input id="youTubeExcludedPlaylistIds" is="emby-input" type="text" />
+                        <div class="fieldDescription">Comma-separated playlist IDs.</div>
+                    </div>
+
                     <h2>Sources</h2>
                     <p class="fieldDescription">
                         One row per channel, playlist or single-video URL. Removing a row retires
@@ -649,6 +660,8 @@
                                 (config.PreferredAudioLanguages || []).join(', ');
                             document.querySelector('#preferredSubtitleLanguages').value =
                                 (config.PreferredSubtitleLanguages || []).join(', ');
+                            document.querySelector('#youTubeChannelLibraryName').value = config.YouTubeChannelLibraryName || '';
+                            document.querySelector('#youTubeExcludedPlaylistIds').value = config.YouTubeExcludedPlaylistIds || '';
                             document.querySelector('#enableAutomaticEnglishCaptions').checked =
                                 config.EnableAutomaticEnglishCaptions !== false;
                             document.querySelector('#allowTranslatedEnglishCaptions').checked =
@@ -704,6 +717,8 @@
                                 .split(',').map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
                             config.PreferredSubtitleLanguages = document.querySelector('#preferredSubtitleLanguages').value
                                 .split(',').map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
+                            config.YouTubeChannelLibraryName = document.querySelector('#youTubeChannelLibraryName').value.trim();
+                            config.YouTubeExcludedPlaylistIds = document.querySelector('#youTubeExcludedPlaylistIds').value.trim();
                             config.EnableAutomaticEnglishCaptions =
                                 document.querySelector('#enableAutomaticEnglishCaptions').checked;
                             config.AllowTranslatedEnglishCaptions =

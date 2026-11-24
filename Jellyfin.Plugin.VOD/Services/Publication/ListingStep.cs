@@ -323,6 +323,9 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
             int existingCount,
             DateTimeOffset now)
         {
+            var keepFrom = sourceDef.RetentionDays > 0 && YouTubeCaption.IsYouTubePage(sourceUrl)
+                ? DateOnly.FromDateTime(now.AddDays(-sourceDef.RetentionDays).UtcDateTime)
+                : (DateOnly?)null;
             var deduped = Deduplicate(playlist.Entries);
 
             // Before the first video, and not with the source metadata below: a video's source_url
@@ -366,6 +369,11 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
                 }
                 else
                 {
+                    if (keepFrom is { } cutoff && entry.UploadDate is { } uploadDate && uploadDate < cutoff)
+                    {
+                        continue;
+                    }
+
                     // New video: create the row. listing_title and title are set from what the
                     // listing returned; the wave will overwrite title with the full metadata answer.
                     var duration = entry.Duration.HasValue ? (int?)((int)entry.Duration.Value) : null;

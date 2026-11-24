@@ -257,6 +257,12 @@ namespace Jellyfin.Plugin.VOD.Configuration
         /// </remarks>
         public int LiveProbeIntervalMinutes { get; set; } = 5;
 
+        /// <summary>Gets or sets the separate mixed library for the native YouTube channel view.</summary>
+        public string YouTubeChannelLibraryName { get; set; } = string.Empty;
+
+        /// <summary>Gets or sets comma-separated YouTube playlist IDs excluded from the channel view.</summary>
+        public string YouTubeExcludedPlaylistIds { get; set; } = string.Empty;
+
         // ── Sources ───────────────────────────────────────────────────────────────
 
         /// <summary>Gets or sets the list of configured sync sources.</summary>

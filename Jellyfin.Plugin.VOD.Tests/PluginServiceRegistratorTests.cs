@@ -120,10 +120,8 @@ namespace Jellyfin.Plugin.VOD.Tests
                     && t is { IsAbstract: false, IsInterface: false })
                 .ToList();
 
-            // Two, and two only. There is no stream-description task: describing happens inside
-            // the wave, with the metadata fetch that found the manifest. A third would mean the
-            // retired one came back, with a second stream of yt-dlp calls the throttle cannot see.
-            Assert.Equal(2, taskTypes.Count);
+            Assert.Equal(3, taskTypes.Count);
+            Assert.Contains(typeof(YouTubeChannelTask), taskTypes);
 
             foreach (var type in taskTypes)
             {

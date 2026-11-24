@@ -12,6 +12,7 @@ using Jellyfin.Plugin.VOD.Configuration;
 using Jellyfin.Plugin.VOD.Data;
 using Jellyfin.Plugin.VOD.Data.Models;
 using Jellyfin.Plugin.VOD.Imaging;
+using Jellyfin.Plugin.VOD.Services.Publication;
 using Jellyfin.Plugin.VOD.Localization;
 using Jellyfin.Plugin.VOD.Services;
 using MediaBrowser.Controller.Entities;
@@ -244,7 +245,8 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             IReadOnlySet<string> allKnownVideoIds,
             string localBaseUrl,
             bool useReleaseDateAsDateAdded,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool hideSyntheticYouTubeNumbers = false)
         {
             ArgumentNullException.ThrowIfNull(target);
             ArgumentNullException.ThrowIfNull(otherAnchors);
@@ -313,14 +315,14 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
                     Video committed;
                     (outcome, committed) = await UpsertEpisodeAsync(
                         series, currentSeason, video, primary, published,
-                        useReleaseDate, seriesMoved, cancellationToken)
+                        useReleaseDate, seriesMoved, cancellationToken, hideSyntheticYouTubeNumbers)
                         .ConfigureAwait(false);
 
                     var alternates = new List<BaseItem>();
                     for (var i = 1; i < members.Count; i++)
                     {
                         var (alternateCreated, alternate) = await UpsertAlternateAsync<Episode>(
-                                currentSeason, video, members[i], published, seriesMoved, cancellationToken)
+                                currentSeason, video, members[i], published, seriesMoved, cancellationToken, hideSyntheticYouTubeNumbers)
                             .ConfigureAwait(false);
                         alternates.Add(alternate);
                         if (alternateCreated)
@@ -669,7 +671,8 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             Dictionary<string, List<BaseItem>> published,
             bool useReleaseDateAsDateAdded,
             bool seriesMoved,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool hideSyntheticYouTubeNumbers = false)
         {
             var itemId = _libraryManager.GetNewItemId(member.ItemKey, typeof(Episode));
             var existing = TakeById<Episode>(video.Id, itemId, published);
@@ -677,6 +680,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             var reparent = existing is not null && (existing.ParentId != season.Id || seriesMoved);
 
             var episode = existing ?? new Episode { Id = itemId };
+            var displayNumber = hideSyntheticYouTubeNumbers ? EpisodeNumberForPresentation(video) : video.EpisodeNumber;
 
             var overview = BuildVideoOverview(video);
             var premiereDate = PremiereDateFor(video);
@@ -691,7 +695,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
                 || !string.Equals(episode.Overview, overview, StringComparison.Ordinal)
                 || reparent
                 || !string.Equals(episode.Path, member.Path, StringComparison.Ordinal)
-                || episode.IndexNumber != video.EpisodeNumber
+                || episode.IndexNumber != displayNumber
                 || episode.ParentIndexNumber != season.IndexNumber
                 || episode.PremiereDate != premiereDate
                 || episode.ProductionYear != productionYear
@@ -706,7 +710,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             episode.Overview = overview;
             episode.ParentId = season.Id;
             episode.Path = member.Path;
-            episode.IndexNumber = video.EpisodeNumber;
+            episode.IndexNumber = displayNumber;
             episode.ParentIndexNumber = season.IndexNumber;
             episode.PremiereDate = premiereDate;
             episode.ProductionYear = productionYear;
@@ -765,7 +769,8 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             VersionMember member,
             Dictionary<string, List<BaseItem>> published,
             bool seriesMoved,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool hideSyntheticYouTubeNumbers = false)
             where T : BaseItem, new()
         {
             var itemId = _libraryManager.GetNewItemId(member.ItemKey, typeof(T));
@@ -822,9 +827,10 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             if (item is Episode episode && parent is Season season)
             {
                 var seriesKey = season.SeriesPresentationUniqueKey;
+                var displayNumber = hideSyntheticYouTubeNumbers ? EpisodeNumberForPresentation(video) : video.EpisodeNumber;
                 changed |= episode.SeasonId != season.Id
                     || episode.SeriesId != season.SeriesId
-                    || episode.IndexNumber != video.EpisodeNumber
+                    || episode.IndexNumber != displayNumber
                     || episode.ParentIndexNumber != season.IndexNumber
                     || !string.Equals(episode.SeriesPresentationUniqueKey, seriesKey, StringComparison.Ordinal);
 
@@ -833,7 +839,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
                 episode.SeriesId = season.SeriesId;
                 episode.SeriesName = season.SeriesName;
                 episode.SeriesPresentationUniqueKey = seriesKey;
-                episode.IndexNumber = video.EpisodeNumber;
+                episode.IndexNumber = displayNumber;
                 episode.ParentIndexNumber = season.IndexNumber;
             }
 
@@ -1205,6 +1211,21 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
         /// time, which is in the future. Both are computed here rather than stored, so the row keeps
         /// the dates episode numbering and the eventual replay depend on.
         /// </remarks>
+        internal static int? EpisodeNumberForPresentation(VideoRecord video)
+        {
+            // The title already has the creator's wording. Jellyfin clients prefix IndexNumber,
+            // so leave just the synthetic YouTube date/rank numbers out of the visible field.
+            if (YouTubeCaption.IsYouTubePage(video.VideoUrl)
+                && video.SeasonNumber is { } season && video.EpisodeNumber is { } episode
+                && DateNumbering.EncodedDay(season, episode) is not null
+                && DateNumbering.Supplied(video) is null)
+            {
+                return null;
+            }
+
+            return video.EpisodeNumber;
+        }
+
         internal static DateTime? PremiereDateFor(VideoRecord video)
         {
             ArgumentNullException.ThrowIfNull(video);

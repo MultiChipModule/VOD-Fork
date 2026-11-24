@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text.Json;
 
 namespace Jellyfin.Plugin.VOD.Services.Sync.Dto
@@ -7,6 +8,9 @@ namespace Jellyfin.Plugin.VOD.Services.Sync.Dto
     /// <summary>The result of a yt-dlp flat-playlist invocation.</summary>
     public sealed class PlaylistInfo
     {
+        /// <summary>Gets the stable channel ID when yt-dlp identifies the owner.</summary>
+        public string? ChannelId { get; init; }
+
         /// <summary>Gets the playlist/channel title as reported by the platform.</summary>
         public string? Title { get; init; }
 
@@ -96,6 +100,8 @@ namespace Jellyfin.Plugin.VOD.Services.Sync.Dto
                 return new PlaylistInfo
                 {
                     Title = root.TryGetProperty("title", out var title) ? title.GetString() : null,
+                    ChannelId = ReadString(root, "channel_id")
+                        ?? (ReadString(root, "id") is { } id && YouTubeChannelTask.IsChannelId(id) ? id : null),
                     ChannelName = ReadString(root, "channel") ?? ReadString(root, "uploader"),
                     Tags = JsonArrays.ReadStrings(root, "tags", VideoMetadata.MaxTags),
                     ThumbnailUrl = thumb,
@@ -235,7 +241,10 @@ namespace Jellyfin.Plugin.VOD.Services.Sync.Dto
                 VideoUrl = url,
                 Title = ReadString(el, "title"),
                 IeKey = ieKey,
+                ChannelId = ReadString(el, "channel_id"),
                 Duration = duration,
+                UploadDate = DateOnly.TryParseExact(ReadString(el, "upload_date"), "yyyyMMdd",
+                    CultureInfo.InvariantCulture, DateTimeStyles.None, out var uploadDate) ? uploadDate : null,
                 LiveStatus = LiveStatusParser.FromYtDlp(
                     el.TryGetProperty("live_status", out var els) && els.ValueKind == JsonValueKind.String
                         ? els.GetString()

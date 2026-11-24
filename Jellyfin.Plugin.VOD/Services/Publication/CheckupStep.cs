@@ -161,7 +161,8 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
                             _db.GetVideoIdsWithMetadata(), rows, source.RetentionDays, now),
                         config.LocalBaseUrl,
                         config.UseReleaseDateAsDateAdded,
-                        cancellationToken)
+                        cancellationToken,
+                        hideSyntheticYouTubeNumbers: !string.IsNullOrWhiteSpace(config.YouTubeChannelLibraryName))
                     .ConfigureAwait(false);
 
                 var marked = ApplyDescriptions(publishable, report, descriptions, cancellationToken);

@@ -1,3 +1,5 @@
+using System;
+
 namespace Jellyfin.Plugin.VOD.Services.Sync.Dto
 {
     /// <summary>One entry from a yt-dlp flat-playlist listing.</summary>
@@ -17,6 +19,12 @@ namespace Jellyfin.Plugin.VOD.Services.Sync.Dto
 
         /// <summary>Gets the video duration in seconds, when available from the flat listing.</summary>
         public double? Duration { get; init; }
+
+        /// <summary>Gets the stable ID of the uploader when provided.</summary>
+        public string? ChannelId { get; init; }
+
+        /// <summary>Gets the upload date when supplied by the flat listing.</summary>
+        public DateOnly? UploadDate { get; init; }
 
         /// <summary>Whether this entry is broadcasting now, scheduled, or neither.</summary>
         public LiveStatus LiveStatus { get; init; }
