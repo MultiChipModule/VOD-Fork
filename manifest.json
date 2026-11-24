@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "5.0.2.0",
+                "changelog": "Offer creator-uploaded and automatic English together as plain native WebVTT tracks.",
+                "targetAbi": "12.1.0.0",
+                "timestamp": "2026-11-24T22:17:40Z",
+                "sourceUrl": "https://github.com/MultiChipModule/VOD-Fork/releases/download/v5.0.2.0/vod-fork_5.0.2.0.zip",
+                "checksum": "5add181af4565878b0966c0cd7eae123"
+            },
+            {
                 "version": "5.0.1.0",
                 "changelog": "Add automatic English caption fallback, a bounded WebVTT cache and authenticated subtitle delivery.",
                 "targetAbi": "12.1.0.0",
