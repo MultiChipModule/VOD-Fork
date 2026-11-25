@@ -89,6 +89,7 @@
                     </div>
 
                     <p id="youtubeExtractionStatus" role="status"></p>
+                    <p id="youtubeExtractionHelp" role="status"></p>
 
                     <h2>Libraries</h2>
 
@@ -498,20 +499,29 @@
             function applyStatus(status) {
                 var youtube = status.YouTube;
                 var summary = document.getElementById('youtubeExtractionStatus');
+                var help = document.getElementById('youtubeExtractionHelp');
                 if (youtube) {
                     var details = [
                         youtube.Authentication,
                         youtube.Active + ' active extractions',
                         youtube.WaitingPlayback + ' playback requests waiting',
-                        youtube.BackgroundLastHour + ' background extractions in the last hour'
+                        youtube.BackgroundLastHour + ' background extractions in the last hour',
+                        youtube.Started + ' extraction slots used since restart'
                     ];
                     if (youtube.Restriction) details.push('Last restriction: ' + youtube.Restriction);
                     if (youtube.CooldownUntil) details.push('Cooldown until ' + new Date(youtube.CooldownUntil).toLocaleString());
                     if (youtube.NextRetry) details.push('Next playback attempt ' + new Date(youtube.NextRetry).toLocaleString());
                     if (youtube.NextBackgroundRetry) details.push('Next background attempt ' + new Date(youtube.NextBackgroundRetry).toLocaleString());
                     summary.textContent = details.join(' · ');
+                    help.textContent = youtube.CooldownUntil
+                        ? 'New playback is paused. Wait until the next permitted retry. Existing streams can continue.'
+                        : youtube.Authentication === 'Cookie file needs attention'
+                            ? 'Export a current signed-in Netscape cookies.txt and check the owner-only permissions and container path.'
+                            : youtube.LastError || (youtube.Authentication === 'Signed-in cookies present'
+                                ? 'YouTube verifies the session when extraction runs.' : '');
                 } else {
                     summary.textContent = '';
+                    help.textContent = '';
                 }
 
                 var alert = document.getElementById('libraryAlert');

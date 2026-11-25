@@ -230,6 +230,10 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
         [Fact]
         public async Task AuthenticatedPlaybackRegistersTheSameCachedCaptionForEveryQuality()
         {
+            if (OperatingSystem.IsWindows())
+                return;
+
+            using var extraction = new MockYouTubeExtractor(MockYouTubeExtractor.HlsOutput);
             const string vodId = "vod-item";
             var primary = new TestVideo { Id = Guid.NewGuid() };
             var alternate = new TestVideo { Id = Guid.NewGuid() };
@@ -244,7 +248,7 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
             var mediaSources = Substitute.For<IMediaSourceManager>();
             var repository = Substitute.For<IMediaStreamRepository>();
             var database = Substitute.For<IVodDatabase>();
-            database.GetVideoByUuid(vodId).Returns(new VideoRecord { VideoUrl = VideoUrl, NativeId = "SLe8Ot4XTiM" });
+            database.GetVideoByUuid(vodId).Returns(new VideoRecord { Id = vodId, VideoUrl = VideoUrl, NativeId = "SLe8Ot4XTiM" });
             users.GetUserById(userId).Returns(user);
             library.GetItemById<BaseItem>(primary.Id, user).Returns(primary);
             var videoStream = new MediaStream { Index = 0, Type = MediaStreamType.Video, Codec = "h264" };
@@ -255,9 +259,10 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
             var caption = cache.Store("SLe8Ot4XTiM", CaptionKind.OriginalAutomatic, Vtt, config);
             var creator = cache.Store("SLe8Ot4XTiM", CaptionKind.Creator, Vtt, config);
             using var filter = new CaptionPlaybackFilter(library, users, mediaSources, repository, database,
-                null!, cache, NullLogger<CaptionPlaybackFilter>.Instance);
+                extraction.Service, cache, NullLogger<CaptionPlaybackFilter>.Instance);
 
-            await filter.TryPrepareAsync(primary.Id, userId, config, CancellationToken.None);
+            Assert.True((await filter.TryPrepareAsync(primary.Id, userId, null, true, config, CancellationToken.None)).Available);
+            Assert.Single(File.ReadAllLines(extraction.ArgumentsPath));
             foreach (var id in new[] { primary.Id, alternate.Id })
             {
                 repository.Received(1).SaveMediaStreams(id,

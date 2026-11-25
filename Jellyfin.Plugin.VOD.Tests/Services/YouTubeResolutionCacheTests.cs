@@ -64,6 +64,18 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
             Assert.Same(recovered, await waiting);
         }
 
+        [Fact]
+        public async Task FailedResolutionIsReusedBrieflyThenRetried()
+        {
+            var clock = new TestClock();
+            using var cache = new YouTubeResolutionCache(clock);
+            Assert.Null(await cache.ResolveAsync("v", "default", _ => Task.FromResult<StreamResolution?>(null), default));
+            var recovered = new StreamResolution("https://example.com/a.m3u8", true);
+            Assert.Null(await cache.ResolveAsync("v", "default", _ => Task.FromResult<StreamResolution?>(recovered), default));
+            clock.Now = clock.Now.AddSeconds(15);
+            Assert.Same(recovered, await cache.ResolveAsync("v", "default", _ => Task.FromResult<StreamResolution?>(recovered), default));
+        }
+
         private sealed class TestClock : TimeProvider
         {
             internal DateTimeOffset Now = new(2026, 11, 24, 0, 0, 0, TimeSpan.Zero);

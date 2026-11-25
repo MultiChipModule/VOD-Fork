@@ -17,6 +17,7 @@ namespace Jellyfin.Plugin.VOD.Services
         private DateTimeOffset _nextStart;
         private DateTimeOffset _restrictedUntil;
         private int _active;
+        private long _started;
         private int _waitingPlayback;
         private int _restrictions;
         private string? _restriction;
@@ -49,7 +50,8 @@ namespace Jellyfin.Plugin.VOD.Services
         }
 
         internal sealed record Snapshot(int Active, int WaitingPlayback, int BackgroundLastHour,
-            string? Restriction, DateTimeOffset? CooldownUntil, DateTimeOffset? NextRetry, DateTimeOffset? NextBackgroundRetry);
+            string? Restriction, DateTimeOffset? CooldownUntil, DateTimeOffset? NextRetry, DateTimeOffset? NextBackgroundRetry,
+            long Started);
 
         internal Snapshot Status()
         {
@@ -64,7 +66,7 @@ namespace Jellyfin.Plugin.VOD.Services
                     ? _background.ElementAt(_background.Count - limit).AddHours(1) : next;
                 return new Snapshot(_active, _waitingPlayback, _background.Count, _restriction,
                     _restrictedUntil > now ? _restrictedUntil : null, next > now ? next : null,
-                    background > now && background > next ? background : next > now ? next : null);
+                    background > now && background > next ? background : next > now ? next : null, _started);
             }
         }
 
@@ -126,6 +128,7 @@ namespace Jellyfin.Plugin.VOD.Services
                 }
 
                 _active++;
+                _started++;
                 _nextStart = now.AddSeconds(Math.Clamp(config?.YouTubeExtractionIntervalSeconds ?? 10, 1, 300));
                 if (!playback)
                 {

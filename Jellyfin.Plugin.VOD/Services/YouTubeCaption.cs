@@ -10,7 +10,8 @@ namespace Jellyfin.Plugin.VOD.Services
     {
         internal static bool IsYouTubePage(string url) =>
             Uri.TryCreate(url, UriKind.Absolute, out var uri)
-            && (IsYouTubeHost(uri.IdnHost) || uri.IdnHost == "youtu.be");
+            && uri.Scheme is "http" or "https"
+            && string.Equals(PlatformLane.For(url), PlatformLane.Youtube, StringComparison.Ordinal);
 
         internal static bool IsTimedText(Uri uri) =>
             uri.Scheme == Uri.UriSchemeHttps

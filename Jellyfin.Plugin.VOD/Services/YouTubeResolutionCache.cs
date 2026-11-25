@@ -12,7 +12,7 @@ namespace Jellyfin.Plugin.VOD.Services
     {
         private const int Capacity = 64;
         private readonly object _sync = new();
-        private readonly Dictionary<(string Page, string Format), (StreamResolution Value, DateTimeOffset Expiry)> _cache = new();
+        private readonly Dictionary<(string Page, string Format), (StreamResolution? Value, DateTimeOffset Expiry)> _cache = new();
         private readonly Dictionary<(string Page, string Format), Pending> _pending = new();
         private readonly SemaphoreSlim _slots = new(4, 4);
 
@@ -24,7 +24,7 @@ namespace Jellyfin.Plugin.VOD.Services
             Pending pending;
             lock (_sync)
             {
-                if (Find(key) is { } cached)
+                if (TryFind(key, out var cached))
                 {
                     observeCache?.Invoke(true);
                     return cached;
@@ -46,7 +46,7 @@ namespace Jellyfin.Plugin.VOD.Services
                 {
                     lock (_sync)
                     {
-                        if (Find(key) is { } cached)
+                        if (TryFind(key, out var cached))
                         {
                             observeCache?.Invoke(true);
                             return cached;
@@ -65,11 +65,7 @@ namespace Jellyfin.Plugin.VOD.Services
                         _slots.Release();
                     }
 
-                    if (resolution is not null)
-                    {
-                        Remember(key, resolution);
-                    }
-
+                    Remember(key, resolution);
                     return resolution;
                 }
                 finally
@@ -90,6 +86,14 @@ namespace Jellyfin.Plugin.VOD.Services
             }
         }
 
+        internal StreamResolution? TryGet(string page, string format)
+        {
+            lock (_sync)
+            {
+                return TryFind((page, format), out var cached) ? cached : null;
+            }
+        }
+
         internal void Invalidate(string page, string format, StreamResolution served)
         {
             lock (_sync)
@@ -102,22 +106,25 @@ namespace Jellyfin.Plugin.VOD.Services
             }
         }
 
-        private StreamResolution? Find((string Page, string Format) key)
+        private bool TryFind((string Page, string Format) key, out StreamResolution? resolution)
         {
             if (_cache.TryGetValue(key, out var entry) && entry.Expiry > clock.GetUtcNow())
             {
-                return entry.Value;
+                resolution = entry.Value;
+                return true;
             }
 
             _cache.Remove(key);
-            return null;
+            resolution = null;
+            return false;
         }
 
-        private void Remember((string Page, string Format) key, StreamResolution resolution)
+        private void Remember((string Page, string Format) key, StreamResolution? resolution)
         {
             var now = clock.GetUtcNow();
-            var expiry = now.AddMinutes(5);
-            if (Uri.TryCreate(resolution.Url, UriKind.Absolute, out var uri))
+            // Collapse immediate client retries when extraction failed without a platform cooldown.
+            var expiry = resolution is null ? now.AddSeconds(15) : now.AddMinutes(5);
+            if (resolution is not null && Uri.TryCreate(resolution.Url, UriKind.Absolute, out var uri))
             {
                 var query = QueryHelpers.ParseQuery(uri.Query);
                 var segments = uri.AbsolutePath.Split('/');

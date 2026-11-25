@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Plugin.VOD.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.VOD.Services
@@ -24,6 +26,8 @@ namespace Jellyfin.Plugin.VOD.Services
         private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks =
             new(StringComparer.OrdinalIgnoreCase);
         private readonly ILogger<CookieJar> _logger;
+        private readonly Func<PluginConfiguration?> _configuration;
+        private readonly Func<string?> _dataPath;
         /// <summary>
         /// Per lane, not global: with one flag, a lane whose copy succeeds clears the flag a lane
         /// whose copy keeps failing had set, so the same error logs again on every single call —
@@ -33,15 +37,16 @@ namespace Jellyfin.Plugin.VOD.Services
             new(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>Initializes a new instance of the <see cref="CookieJar"/> class.</summary>
-        public CookieJar(ILogger<CookieJar> logger) => _logger = logger;
-
-        private static string? ConfiguredSeedPath
+        public CookieJar(ILogger<CookieJar> logger)
+            : this(logger, static () => Plugin.Instance?.Configuration, static () => Plugin.Instance?.DataFolderPath)
         {
-            get
-            {
-                var path = Plugin.Instance?.Configuration.CookiesPath;
-                return string.IsNullOrWhiteSpace(path) ? null : path;
-            }
+        }
+
+        internal CookieJar(ILogger<CookieJar> logger, Func<PluginConfiguration?> configuration, Func<string?> dataPath)
+        {
+            _logger = logger;
+            _configuration = configuration;
+            _dataPath = dataPath;
         }
 
         /// <summary>The file name the working copy of a lane's cookies takes.</summary>
@@ -64,12 +69,6 @@ namespace Jellyfin.Plugin.VOD.Services
             return $"cookies-{safe}.txt";
         }
 
-        private static string WorkingPathFor(string lane)
-            => Path.Combine(Plugin.Instance!.DataFolderPath, WorkingFileNameFor(lane));
-
-        private static string SeedStampPathFor(string lane)
-            => Path.Combine(Plugin.Instance!.DataFolderPath, WorkingFileNameFor(lane) + ".seed");
-
         /// <summary>
         /// Takes the cookie file of one lane for the duration of one yt-dlp invocation.
         /// Returns a lease whose <see cref="CookieLease.Path"/> is null when no cookies are configured.
@@ -82,8 +81,9 @@ namespace Jellyfin.Plugin.VOD.Services
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(lane);
 
-            var seed = youtube ? Plugin.Instance?.Configuration.YouTubeCookiesPath : ConfiguredSeedPath;
-            if (string.IsNullOrWhiteSpace(seed) || Plugin.Instance is null)
+            var config = _configuration();
+            var seed = youtube ? config?.YouTubeCookiesPath : config?.CookiesPath;
+            if (string.IsNullOrWhiteSpace(seed) || _dataPath() is not { } folder)
             {
                 return new CookieLease(null, null);
             }
@@ -103,7 +103,7 @@ namespace Jellyfin.Plugin.VOD.Services
 
             try
             {
-                return new CookieLease(EnsureWorkingCopy(seed, lane, youtube), gate);
+                return new CookieLease(EnsureWorkingCopy(seed, folder, lane, youtube), gate);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -116,7 +116,7 @@ namespace Jellyfin.Plugin.VOD.Services
             }
         }
 
-        private string? EnsureWorkingCopy(string seed, string lane, bool youtube)
+        private string? EnsureWorkingCopy(string seed, string folder, string lane, bool youtube)
         {
             if (!File.Exists(seed))
             {
@@ -132,15 +132,15 @@ namespace Jellyfin.Plugin.VOD.Services
             if (youtube)
                 stamp = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(seed + "\n" + stamp)));
 
-            var workingPath = WorkingPathFor(lane);
-            var stampPath = SeedStampPathFor(lane);
+            var workingPath = Path.Combine(folder, WorkingFileNameFor(lane));
+            var stampPath = workingPath + ".seed";
             var seeded = File.Exists(stampPath)
                 ? File.ReadAllText(stampPath).Trim()
                 : null;
 
             if (!File.Exists(workingPath) || !string.Equals(stamp, seeded, StringComparison.Ordinal))
             {
-                Plugin.Instance!.EnsureDataFolder();
+                Directory.CreateDirectory(folder);
                 if (youtube)
                 {
                     CopyPrivate(seed, workingPath);
@@ -188,6 +188,44 @@ namespace Jellyfin.Plugin.VOD.Services
             {
                 return false;
             }
+        }
+
+        internal static bool HasYouTubeSession(string path)
+        {
+            if (!CanUseYouTubeSeed(path))
+                return false;
+
+            try
+            {
+                var login = false;
+                var signed = false;
+                var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                foreach (var line in File.ReadLines(path))
+                {
+                    var values = line.Split('\t', 7);
+                    if (values.Length != 7 || values[2] != "/" || string.IsNullOrWhiteSpace(values[6]))
+                        continue;
+
+                    var domain = values[0].StartsWith("#HttpOnly_", StringComparison.Ordinal) ? values[0][10..] : values[0];
+                    var host = domain.TrimStart('.');
+                    if ((!string.Equals(host, "youtube.com", StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(host, "www.youtube.com", StringComparison.OrdinalIgnoreCase))
+                        || !long.TryParse(values[4], NumberStyles.None, CultureInfo.InvariantCulture, out var expiry)
+                        || (expiry != 0 && expiry <= now))
+                        continue;
+
+                    login |= values[5] == "LOGIN_INFO";
+                    signed |= values[5] is "SAPISID" or "__Secure-1PAPISID" or "__Secure-3PAPISID";
+                    if (login && signed)
+                        return true;
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return false;
+            }
+
+            return false;
         }
 
         private static void CopyPrivate(string seed, string destination)

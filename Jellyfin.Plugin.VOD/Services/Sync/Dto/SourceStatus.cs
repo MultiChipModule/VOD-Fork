@@ -157,7 +157,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync.Dto
     /// <summary>Credential-free YouTube extraction activity and retry times.</summary>
     public sealed record YouTubeExtractionStatus(string Authentication, int Active, int WaitingPlayback,
         int BackgroundLastHour, string? Restriction, DateTimeOffset? CooldownUntil,
-        DateTimeOffset? NextRetry, DateTimeOffset? NextBackgroundRetry);
+        DateTimeOffset? NextRetry, DateTimeOffset? NextBackgroundRetry, long Started, string? LastError);
 
     /// <summary>
     /// One library the configuration page may offer, with what it is allowed to hold.

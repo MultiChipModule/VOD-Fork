@@ -387,12 +387,12 @@ namespace Jellyfin.Plugin.VOD.Services
         }
 
         internal async Task<IReadOnlyList<MediaStream>?> RefreshYouTubeLayoutAsync(
-            PluginConfiguration config, Video item, string vodId, CancellationToken cancellationToken)
+            PluginConfiguration config, Video item, string vodId, CancellationToken cancellationToken, Func<bool>? shouldProbe = null)
         {
             var (height, codec) = VersionGroup.TierOf(item.Path);
             var probe = await ProbeAsync(config, vodId,
                 height is { } value && codec is not null ? new Tier(value, codec, null) : null,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken, shouldProbe).ConfigureAwait(false);
             return probe is not null && HasCurrentYouTubeLayout(probe) ? probe : null;
         }
 
@@ -407,7 +407,7 @@ namespace Jellyfin.Plugin.VOD.Services
         /// <summary>Probes one member through our own route, one heavy probe at a time.</summary>
         /// <returns>The streams, or null when the probe failed or found none.</returns>
         private async Task<IReadOnlyList<MediaStream>?> ProbeAsync(
-            PluginConfiguration config, string vodUuid, Tier? tier, CancellationToken cancellationToken)
+            PluginConfiguration config, string vodUuid, Tier? tier, CancellationToken cancellationToken, Func<bool>? shouldProbe = null)
         {
             var url = VersionGroup.PathFor(config.LocalBaseUrl, vodUuid, tier);
 
@@ -415,6 +415,9 @@ namespace Jellyfin.Plugin.VOD.Services
             await _probeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
+                if (shouldProbe?.Invoke() == false)
+                    return null;
+
                 info = await _encoder.GetMediaInfo(
                         new MediaInfoRequest
                         {

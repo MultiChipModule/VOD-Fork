@@ -1,5 +1,11 @@
 # Changelog
 
+## 5.2.1.0
+
+- Stop playback negotiation and media startup when a YouTube cooldown blocks the source. Return native Jellyfin playback errors and retry headers.
+- Apply configured cookies and JavaScript runtime consistently, and reject results when yt-dlp reports that the session was lost.
+- Share resolutions and upstream manifests across quality variants, probe selected streams on demand, and show actionable extraction status.
+
 ## 5.2.0.0
 
 - Publish YouTube videos from metadata-only listings and resolve and probe playable media on demand.

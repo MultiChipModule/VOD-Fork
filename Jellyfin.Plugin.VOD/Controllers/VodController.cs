@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Threading;
@@ -153,16 +154,17 @@ namespace Jellyfin.Plugin.VOD.Controllers
                 return Content(cached, "application/vnd.apple.mpegurl");
             }
 
+            var youtube = YouTubeCaption.IsYouTubePage(video.VideoUrl);
             var resolution = await _ytDlp
                 .ResolveAsync(video.VideoUrl, format, cancellationToken)
                 .ConfigureAwait(false);
 
             if (resolution is null)
             {
-                return StatusCode(503, new { error = "Video unavailable", videoUrl = video.VideoUrl });
+                return youtube ? CaptionPlaybackDispatch.UnavailableStream(Response, _ytDlp.YouTubeStatus.CooldownUntil)
+                    : StatusCode(503, new { error = "Video unavailable", videoUrl = video.VideoUrl });
             }
 
-            var youtube = YouTubeCaption.IsYouTubePage(video.VideoUrl);
             if (!resolution.IsManifest)
             {
                 if (youtube && DescribesTheServedMaster(format))
@@ -174,16 +176,19 @@ namespace Jellyfin.Plugin.VOD.Controllers
                 return Redirect(resolution.Url);
             }
 
-            var master = await FilterUpstreamAsync(
-                    resolution.Url, height, codec, effectiveAudioLangs, effectiveSubLangs,
-                    youtube, cancellationToken)
-                .ConfigureAwait(false);
+            var upstream = await FetchMasterAsync(resolution.Url, youtube, cancellationToken).ConfigureAwait(false);
+            var master = upstream is null ? null
+                : FilterUpstream(resolution.Url, upstream, height, codec, effectiveAudioLangs, effectiveSubLangs, youtube);
 
             if (master is null)
             {
-                if (youtube)
+                // A missing tier is specific to that quality. Keep the good master available to
+                // the default source and other variants.
+                if (youtube && upstream is null)
                 {
                     _ytDlp.InvalidateResolution(video.VideoUrl, format, resolution);
+                    if (_ytDlp.YouTubeStatus.CooldownUntil is { } cooldown)
+                        return CaptionPlaybackDispatch.UnavailableStream(Response, cooldown);
                 }
 
                 return height is null && !youtube
@@ -229,7 +234,8 @@ namespace Jellyfin.Plugin.VOD.Controllers
                 }
             }
 
-            DescribeInBackground(config, id, master, format, youtube);
+            if (!youtube)
+                DescribeInBackground(config, id, master, format);
 
             return Content(master.Filtered, "application/vnd.apple.mpegurl");
         }
@@ -509,7 +515,7 @@ namespace Jellyfin.Plugin.VOD.Controllers
             var extraction = _ytDlp.YouTubeStatus;
             var cookiePath = config?.YouTubeCookiesPath;
             var authentication = string.IsNullOrWhiteSpace(cookiePath) ? "Anonymous"
-                : CookieJar.CanUseYouTubeSeed(cookiePath) ? "Cookie file ready" : "Cookie file unusable";
+                : CookieJar.HasYouTubeSession(cookiePath) ? "Signed-in cookies present" : "Cookie file needs attention";
 
             return Ok(new SourcesStatus(
                 libraries,
@@ -519,7 +525,8 @@ namespace Jellyfin.Plugin.VOD.Controllers
             {
                 YouTube = new YouTubeExtractionStatus(authentication, extraction.Active,
                     extraction.WaitingPlayback, extraction.BackgroundLastHour, extraction.Restriction,
-                    extraction.CooldownUntil, extraction.NextRetry, extraction.NextBackgroundRetry)
+                    extraction.CooldownUntil, extraction.NextRetry, extraction.NextBackgroundRetry,
+                    extraction.Started, _ytDlp.LastYouTubeError)
             });
         }
 
@@ -814,16 +821,45 @@ namespace Jellyfin.Plugin.VOD.Controllers
         /// <param name="BaseUri">The URI the master was fetched from.</param>
         private sealed record FetchedMaster(string Filtered, string Upstream, Uri BaseUri);
 
-        private async Task<FetchedMaster?> FilterUpstreamAsync(
-            string masterUrl, int? height, string? codec, string audioLangs, string subLangs, bool youtube, CancellationToken cancellationToken)
+        private async Task<string?> FetchMasterAsync(string masterUrl, bool youtube, CancellationToken cancellationToken)
         {
-            var baseUri = new Uri(masterUrl);
-            var upstream = await FetchStringAsync(masterUrl, cancellationToken).ConfigureAwait(false);
-            if (upstream is null)
+            if (!youtube)
+                return await FetchStringAsync(masterUrl, cancellationToken).ConfigureAwait(false);
+
+            var key = "youtube-upstream-master|" + masterUrl;
+            if (_cache.TryGet(key, out var cached))
+                return cached;
+
+            try
+            {
+                using var client = _httpClientFactory.CreateClient();
+                using var response = await client.GetAsync(new Uri(masterUrl), cancellationToken).ConfigureAwait(false);
+                if (response.StatusCode == HttpStatusCode.TooManyRequests)
+                    _ytDlp.RestrictYouTube("Rate limited");
+                if (!response.IsSuccessStatusCode)
+                    return null;
+
+                var master = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                if (!master.StartsWith("#EXTM3U", StringComparison.Ordinal))
+                    return null;
+
+                _cache.Set(key, master, TimeSpan.FromMinutes(1));
+                return master;
+            }
+            catch (HttpRequestException)
             {
                 return null;
             }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return null;
+            }
+        }
 
+        private FetchedMaster? FilterUpstream(
+            string masterUrl, string upstream, int? height, string? codec, string audioLangs, string subLangs, bool youtube)
+        {
+            var baseUri = new Uri(masterUrl);
             var serverBase = (Plugin.Instance?.Configuration.LocalBaseUrl ?? "http://localhost:8096")
                 .TrimEnd('/');
             var filtered = HlsPlaylistFilter.FilterMaster(
@@ -848,14 +884,13 @@ namespace Jellyfin.Plugin.VOD.Controllers
         /// <param name="id">The video UUID.</param>
         /// <param name="master">The fetched master whose upstream content the describer reuses.</param>
         /// <param name="format">The yt-dlp format selector used by this request.</param>
-        /// <param name="youtube">Whether the audio/video-only YouTube master was used.</param>
         /// <remarks>
         /// Deliberately not awaited, and deliberately not given the request's cancellation token:
         /// the request ends as soon as the playlist is written, which would cancel the work. The
         /// describer never throws, and its own guards keep two callers from probing the same member
         /// twice.
         /// </remarks>
-        private void DescribeInBackground(PluginConfiguration? config, string id, FetchedMaster master, string format, bool youtube)
+        private void DescribeInBackground(PluginConfiguration? config, string id, FetchedMaster master, string format)
         {
             if (config is null)
             {
@@ -880,7 +915,7 @@ namespace Jellyfin.Plugin.VOD.Controllers
                         // failsafe, and the task loop and its back-off registry own the retry logic.
                         _ = await _describer
                             .DescribeGroupAsync(
-                                config, id, master.Upstream, master.BaseUri, CancellationToken.None, youtube)
+                                config, id, master.Upstream, master.BaseUri, CancellationToken.None)
                             .ConfigureAwait(false);
                     }
 #pragma warning disable CA1031 // a background description must never take the server down

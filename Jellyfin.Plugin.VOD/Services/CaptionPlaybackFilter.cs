@@ -8,12 +8,16 @@ using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.VOD.Configuration;
 using Jellyfin.Plugin.VOD.Data;
+using Jellyfin.Plugin.VOD.Data.Models;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Controller.Persistence;
+using MediaBrowser.Model.Dlna;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
 using MediaBrowser.Model.Session;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.AspNetCore.Mvc.Filters;
@@ -37,57 +41,105 @@ namespace Jellyfin.Plugin.VOD.Services
         private readonly PlaylistCache _missingTracks = new();
         private readonly SemaphoreSlim[] _locks = Enumerable.Range(0, 32).Select(_ => new SemaphoreSlim(1)).ToArray();
 
-        internal async Task<bool> TryPrepareAsync(Guid itemId, Guid userId, PluginConfiguration config, CancellationToken cancellationToken)
+        internal DateTimeOffset? CooldownUntil => ytDlp.YouTubeStatus.CooldownUntil;
+
+        internal sealed record PlaybackPreparation(bool Managed, bool Available);
+
+        internal async Task<PlaybackPreparation> TryPrepareAsync(Guid itemId, Guid userId, Guid? sourceId,
+            bool considerAlternates, PluginConfiguration config, CancellationToken cancellationToken)
         {
+            if (FindVideo(itemId, userId) is not { } found)
+                return new(false, true);
+
+            var (item, user, row) = found;
+            // Resolve before calling either Jellyfin's or our own media probe. In particular a
+            // challenge from this first extraction must never reach either FFmpeg entry point.
+            if (CooldownUntil is not null || row.LiveStatus == Sync.LiveStatus.Upcoming)
+                return new(true, false);
+
+            var gate = _locks[(int)((uint)StringComparer.Ordinal.GetHashCode(row.Id) % (uint)_locks.Length)];
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            var available = false;
             try
             {
-                return await PrepareAsync(itemId, userId, config, cancellationToken).ConfigureAwait(false);
+                if (CooldownUntil is not null)
+                    return new(true, false);
+
+                var resolution = await ytDlp.ResolveAsync(row.VideoUrl, StreamCacheKey.DefaultFormat, cancellationToken)
+                    .ConfigureAwait(false);
+                if (resolution is not { IsManifest: true } || CooldownUntil is not null)
+                    return new(true, false);
+
+                available = true;
+                if (row.LiveStatus == Sync.LiveStatus.NotLive)
+                    await PrepareVersionsAsync(item, row, sourceId, considerAlternates, resolution, user, config, cancellationToken)
+                        .ConfigureAwait(false);
+
+                return new(true, CooldownUntil is null);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 LogCaptionFailure(itemId, "timeout");
+                return new(true, available && CooldownUntil is null);
             }
-#pragma warning disable CA1031 // A caption failure must leave Jellyfin's original playback action available.
+#pragma warning disable CA1031 // Requests should receive a native playback error if preparation fails.
             catch (Exception ex) when (ex is not OperationCanceledException)
 #pragma warning restore CA1031
             {
-                // Exception messages can contain signed timed-text URLs.
                 LogCaptionFailure(itemId, ex.GetType().Name);
-            }
-
-            return false;
-        }
-
-        private async Task<bool> PrepareAsync(Guid itemId, Guid userId, PluginConfiguration config, CancellationToken cancellationToken)
-        {
-            var user = users.GetUserById(userId);
-            if (user is null || library.GetItemById<BaseItem>(itemId, user) is not Video item
-                || item.GetProviderId("VOD") is not { Length: > 0 } vodId
-                || database.GetVideoByUuid(vodId) is not { } row
-                || !YouTubeCaption.IsYouTubePage(row.VideoUrl)
-                || row.LiveStatus != Sync.LiveStatus.NotLive)
-            {
-                return false;
-            }
-
-            var gate = _locks[(int)((uint)StringComparer.Ordinal.GetHashCode(vodId) % (uint)_locks.Length)];
-            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
-                await PrepareVersionsAsync(item, vodId, row.NativeId ?? row.VideoUrl, row.VideoUrl, user, config, cancellationToken)
-                    .ConfigureAwait(false);
+                return new(true, available && CooldownUntil is null);
             }
             finally
             {
                 gate.Release();
             }
+        }
 
-            return true;
+        private (Video Item, Jellyfin.Database.Implementations.Entities.User User, VideoRecord Row)? FindVideo(Guid itemId, Guid userId)
+        {
+            if (users.GetUserById(userId) is { } user
+                && library.GetItemById<BaseItem>(itemId, user) is Video item
+                && item.GetProviderId("VOD") is { Length: > 0 } vodId
+                && database.GetVideoByUuid(vodId) is { } row
+                && YouTubeCaption.IsYouTubePage(row.VideoUrl))
+                return (item, user, row);
+
+            return null;
+        }
+
+        internal async Task<bool> CanOpenNativeStreamAsync(Guid itemId, Guid userId, string? mediaSourceId,
+            string? playSessionId, ITranscodeManager? transcodes, bool segment, CancellationToken cancellationToken)
+        {
+            if (segment && CooldownUntil is null)
+                return true;
+
+            if (FindVideo(itemId, userId) is not { } found)
+                return true;
+
+            var (item, user, row) = found;
+            if (row.LiveStatus == Sync.LiveStatus.Upcoming)
+                return false;
+
+            if (CooldownUntil is not null)
+            {
+                // A session ID alone does not establish that FFmpeg is running. Check that the
+                // native job still exists and is using the requested VOD rendition.
+                var source = item;
+                if (Guid.TryParse(mediaSourceId, out var sourceId) && sourceId != item.Id)
+                    source = library.GetItemById<BaseItem>(sourceId, user) as Video;
+                return (source?.GetProviderId("VOD") == row.Id && !string.IsNullOrEmpty(playSessionId)
+                        && transcodes?.GetTranscodingJob(playSessionId) is { HasExited: false } job
+                        && string.Equals(job.MediaSource?.Path, source.Path, StringComparison.Ordinal))
+                    || ytDlp.TryGetCachedYouTubeResolution(row.VideoUrl, StreamCacheKey.DefaultFormat) is { IsManifest: true };
+            }
+
+            return await ytDlp.ResolveAsync(row.VideoUrl, StreamCacheKey.DefaultFormat, cancellationToken)
+                .ConfigureAwait(false) is { IsManifest: true };
         }
 
         private async Task PrepareVersionsAsync(
-            Video item, string vodId, string videoKey, string url, Jellyfin.Database.Implementations.Entities.User user,
-            PluginConfiguration config, CancellationToken cancellationToken)
+            Video item, VideoRecord row, Guid? sourceId, bool considerAlternates, StreamResolution resolution,
+            Jellyfin.Database.Implementations.Entities.User user, PluginConfiguration config, CancellationToken cancellationToken)
         {
             if (describer is null && !ReadStreams(item.Id).Any(stream => stream.Type == MediaStreamType.Video))
             {
@@ -97,12 +149,16 @@ namespace Jellyfin.Plugin.VOD.Services
             }
 
             var versions = item.GetAllVersions()
-                .Where(version => string.Equals(version.GetProviderId("VOD"), vodId, StringComparison.Ordinal))
+                .Where(version => string.Equals(version.GetProviderId("VOD"), row.Id, StringComparison.Ordinal)
+                    && (considerAlternates || version.Id == item.Id || version.Id == sourceId))
                 .Select(version => (Item: version, Stored: ReadStreams(version.Id))).ToArray();
             foreach (var version in versions.Where(version => !StreamDescriber.HasCurrentYouTubeLayout(version.Stored)))
             {
+                if (CooldownUntil is not null)
+                    return;
+
                 if (describer is not null
-                    && await describer.RefreshYouTubeLayoutAsync(config, version.Item, vodId, cancellationToken)
+                    && await describer.RefreshYouTubeLayoutAsync(config, version.Item, row.Id, cancellationToken, () => CooldownUntil is null)
                         .ConfigureAwait(false) is { } probed)
                 {
                     // Store real physical rows before attempting optional subtitle downloads.
@@ -114,7 +170,7 @@ namespace Jellyfin.Plugin.VOD.Services
             }
 
             using var downloadBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            var captions = await FindCaptionsAsync(videoKey, url, config, downloadBudget, cancellationToken)
+            var captions = await FindCaptionsAsync(row.NativeId ?? row.VideoUrl, resolution, config, downloadBudget, cancellationToken)
                 .ConfigureAwait(false);
             foreach (var version in versions)
             {
@@ -128,7 +184,7 @@ namespace Jellyfin.Plugin.VOD.Services
         }
 
         private async Task<IReadOnlyList<CachedCaption>> FindCaptionsAsync(
-            string videoKey, string url, PluginConfiguration config, CancellationTokenSource downloadBudget,
+            string videoKey, StreamResolution resolution, PluginConfiguration config, CancellationTokenSource downloadBudget,
             CancellationToken cancellationToken)
         {
             var creator = cache.Find(videoKey, config, creator: true);
@@ -140,25 +196,20 @@ namespace Jellyfin.Plugin.VOD.Services
                 && !_missingTracks.TryGet(automaticKey, out _);
             if (needCreator || needAutomatic)
             {
-                var resolution = await ytDlp.ResolveAsync(url, StreamCacheKey.DefaultFormat, cancellationToken)
-                    .ConfigureAwait(false);
-                if (resolution is not null)
+                downloadBudget.CancelAfter(TimeSpan.FromSeconds(5));
+                if (needCreator)
                 {
-                    downloadBudget.CancelAfter(TimeSpan.FromSeconds(5));
-                    if (needCreator)
-                    {
-                        creator = await FetchTrackAsync(creatorKey, videoKey,
-                            resolution.EnglishCaptions.Where(track => track.Kind == CaptionKind.Creator),
-                            config, downloadBudget.Token, cancellationToken).ConfigureAwait(false);
-                    }
+                    creator = await FetchTrackAsync(creatorKey, videoKey,
+                        resolution.EnglishCaptions.Where(track => track.Kind == CaptionKind.Creator),
+                        config, downloadBudget.Token, cancellationToken).ConfigureAwait(false);
+                }
 
-                    if (needAutomatic)
-                    {
-                        automatic = await FetchTrackAsync(automaticKey, videoKey,
-                            resolution.EnglishCaptions.Where(track => track.Kind != CaptionKind.Creator
-                                && CaptionCache.IsEnabled(track.Kind, config)),
-                            config, downloadBudget.Token, cancellationToken).ConfigureAwait(false);
-                    }
+                if (needAutomatic)
+                {
+                    automatic = await FetchTrackAsync(automaticKey, videoKey,
+                        resolution.EnglishCaptions.Where(track => track.Kind != CaptionKind.Creator
+                            && CaptionCache.IsEnabled(track.Kind, config)),
+                        config, downloadBudget.Token, cancellationToken).ConfigureAwait(false);
                 }
             }
 
@@ -349,7 +400,7 @@ namespace Jellyfin.Plugin.VOD.Services
 
     // The native subtitle endpoints also support tokenless clients. Require a Jellyfin user
     // with library access for this plugin's cached files, leaving existing tracks alone.
-    internal sealed partial class CaptionPlaybackDispatch : IAsyncActionFilter
+    internal sealed partial class CaptionPlaybackDispatch(Func<PluginConfiguration?>? configuration = null) : IAsyncActionFilter
     {
         internal static bool IsPlaybackInfo(string? controller, string action) =>
             controller == "Jellyfin.Api.Controllers.MediaInfoController"
@@ -358,7 +409,7 @@ namespace Jellyfin.Plugin.VOD.Services
         public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
         {
             if (context.ActionDescriptor is ControllerActionDescriptor action
-                && context.ModelState.IsValid && Plugin.Instance?.Configuration is { } config)
+                && context.ModelState.IsValid && (configuration is null ? Plugin.Instance?.Configuration : configuration()) is { } config)
             {
                 var http = context.HttpContext;
                 var userId = Guid.Empty;
@@ -370,7 +421,24 @@ namespace Jellyfin.Plugin.VOD.Services
                     && authenticated && context.ActionArguments.TryGetValue("itemId", out var value) && value is Guid itemId)
                 {
                     var captions = http.RequestServices.GetRequiredService<CaptionPlaybackFilter>();
-                    var prepared = await captions.TryPrepareAsync(itemId, userId, config, http.RequestAborted).ConfigureAwait(false);
+                    var sourceId = Guid.TryParse(RequestValue(context.ActionArguments, "mediaSourceId", "MediaSourceId") as string,
+                        out var source) ? source : (Guid?)null;
+                    var considerAlternates = action.ActionName == "GetPostedPlaybackInfo"
+                        && (sourceId is null || RequestValue(context.ActionArguments, "maxStreamingBitrate", "MaxStreamingBitrate") is int);
+                    var preparation = await captions.TryPrepareAsync(itemId, userId, sourceId, considerAlternates, config, http.RequestAborted)
+                        .ConfigureAwait(false);
+                    if (!preparation.Available)
+                    {
+                        var cooldown = captions.CooldownUntil;
+                        context.Result = new OkObjectResult(new PlaybackInfoResponse
+                        {
+                            ErrorCode = cooldown is null ? PlaybackErrorCode.NoCompatibleStream : PlaybackErrorCode.RateLimitExceeded
+                        });
+                        SetRetryHeaders(http.Response, cooldown);
+                        return;
+                    }
+
+                    var prepared = preparation.Managed;
                     if (prepared && action.ActionName == "GetPostedPlaybackInfo")
                     {
                         TrySelectBudgetSource(context, captions, itemId, userId, config.EnablePlaybackDiagnostics);
@@ -404,10 +472,27 @@ namespace Jellyfin.Plugin.VOD.Services
                 {
                     ObserveNativeReport(context, action.ActionName, userId, config.EnablePlaybackDiagnostics);
                 }
-                else if (authenticated && config.EnablePlaybackDiagnostics && IsNativeVideoRequest(controller, action.ActionName)
-                    && context.ActionArguments.TryGetValue("itemId", out var nativeItem) && nativeItem is Guid nativeItemId
-                    && http.RequestServices.GetRequiredService<CaptionPlaybackFilter>().IsVisibleYouTubeVideo(nativeItemId, userId))
+                else if (authenticated && (IsNativeVideoRequest(controller, action.ActionName)
+                        || (controller == "Jellyfin.Api.Controllers.DynamicHlsController" && action.ActionName == "GetHlsVideoSegment"))
+                    && context.ActionArguments.TryGetValue("itemId", out var nativeItem) && nativeItem is Guid nativeItemId)
                 {
+                    var captions = http.RequestServices.GetRequiredService<CaptionPlaybackFilter>();
+                    var segment = action.ActionName == "GetHlsVideoSegment";
+                    if (!await captions.CanOpenNativeStreamAsync(nativeItemId, userId,
+                        RequestValue(context.ActionArguments, "mediaSourceId", "MediaSourceId") as string,
+                        RequestValue(context.ActionArguments, "playSessionId", "PlaySessionId") as string,
+                        http.RequestServices.GetService<ITranscodeManager>(), segment, http.RequestAborted).ConfigureAwait(false))
+                    {
+                        context.Result = UnavailableStream(http.Response, captions.CooldownUntil);
+                        return;
+                    }
+
+                    if (segment || !config.EnablePlaybackDiagnostics || !captions.IsVisibleYouTubeVideo(nativeItemId, userId))
+                    {
+                        await next().ConfigureAwait(false);
+                        return;
+                    }
+
                     var executed = await next().ConfigureAwait(false);
                     var client = ClientFamily(http.User.FindFirst("Jellyfin-Client")?.Value,
                         http.Request.Headers.UserAgent.ToString());
@@ -446,6 +531,23 @@ namespace Jellyfin.Plugin.VOD.Services
             }
 
             await next().ConfigureAwait(false);
+        }
+
+        internal static ObjectResult UnavailableStream(HttpResponse response, DateTimeOffset? cooldown)
+        {
+            SetRetryHeaders(response, cooldown);
+            return new ObjectResult(new ProblemDetails
+            {
+                Status = StatusCodes.Status503ServiceUnavailable,
+                Title = cooldown is null ? "YouTube media is unavailable" : "YouTube extraction is temporarily suspended"
+            }) { StatusCode = StatusCodes.Status503ServiceUnavailable };
+        }
+
+        private static void SetRetryHeaders(HttpResponse response, DateTimeOffset? cooldown)
+        {
+            response.Headers.CacheControl = "no-store";
+            if (cooldown is { } until)
+                response.Headers.RetryAfter = until.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
         }
 
         private static void TrySelectBudgetSource(ActionExecutingContext context, CaptionPlaybackFilter captions,
@@ -621,7 +723,7 @@ namespace Jellyfin.Plugin.VOD.Services
 
         internal static bool IsNativeVideoRequest(string? controller, string action) =>
             (controller == "Jellyfin.Api.Controllers.VideosController" && action is "GetVideoStream" or "GetVideoStreamByContainer")
-            || (controller == "Jellyfin.Api.Controllers.DynamicHlsController" && action is "GetMasterHlsVideoPlaylist" or "GetVariantHlsVideoPlaylist");
+            || (controller == "Jellyfin.Api.Controllers.DynamicHlsController" && action is "GetMasterHlsVideoPlaylist" or "GetVariantHlsVideoPlaylist" or "GetLiveHlsStream");
 
         [LoggerMessage(EventId = 4, Level = LogLevel.Information,
             Message = "VOD media request client={Client} method={Method} action={Action} item={ItemId} static={Static} rangeRequested={RangeRequested} actionStatus={Status}")]
