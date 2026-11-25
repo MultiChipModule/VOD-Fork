@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Jellyfin.Plugin.VOD.Configuration;
 using Jellyfin.Plugin.VOD.Data.Models;
+using Jellyfin.Plugin.VOD.Services.Sync;
 
 namespace Jellyfin.Plugin.VOD.Services.Publication
 {
@@ -172,14 +173,23 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
             // FullListingDue: the last full listing is older than the configured interval. Only a
             // full listing can detect a deletion or a retitle below the head of the listing;
             // a short listing sees only the most recent entries.
-            if (now - record.FullListedAt.Value > TimeSpan.FromDays(config.FullListingIntervalDays))
+            var youtubeType = YouTubeCaption.IsYouTubePage(source.Url) ? SourceTypeDetector.Detect(source.Url) : SourceType.Generic;
+            var fullInterval = youtubeType == SourceType.YoutubePlaylist
+                ? TimeSpan.FromHours(Math.Clamp(config.YouTubePlaylistRefreshHours, 1, 168))
+                : TimeSpan.FromDays(config.FullListingIntervalDays);
+            if (now - record.FullListedAt.Value >= fullInterval)
                 return ListingReason.FullListingDue;
 
             // ShortListingDue: the short clock is null or has exceeded this source's own
             // interval. The interval is per-source so that a source polled every 5 minutes and
             // one polled every 1440 minutes do not compete on equal footing.
+            if (youtubeType is SourceType.YoutubePlaylist or SourceType.YoutubeVideo)
+                return null;
+
+            var interval = youtubeType == SourceType.YoutubeChannel
+                ? Math.Clamp(config.YouTubeRssIntervalMinutes, 15, 1440) : source.ListingIntervalMinutes;
             if (record.ShortListedAt is null ||
-                now - record.ShortListedAt.Value > TimeSpan.FromMinutes(source.ListingIntervalMinutes))
+                now - record.ShortListedAt.Value >= TimeSpan.FromMinutes(interval))
             {
                 return ListingReason.ShortListingDue;
             }

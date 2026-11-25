@@ -58,6 +58,8 @@ namespace Jellyfin.Plugin.VOD
             // the yt-dlp service holds the throttle, so two instances would each pace separately.
             serviceCollection.AddSingleton<IYtDlpService>(sp => sp.GetRequiredService<YtDlpService>());
             serviceCollection.AddSingleton<IStreamDescriber>(sp => sp.GetRequiredService<StreamDescriber>());
+            serviceCollection.AddSingleton<YouTubeMetadataService>();
+            serviceCollection.AddSingleton<YouTubeChannelTask>();
 
             // Localisation
             serviceCollection.AddSingleton<IVodLocalizer, VodLocalizer>();

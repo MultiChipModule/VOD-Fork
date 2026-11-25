@@ -10,6 +10,7 @@ using Jellyfin.Plugin.VOD.Configuration;
 using Jellyfin.Plugin.VOD.Data;
 using Jellyfin.Plugin.VOD.Data.Models;
 using Jellyfin.Plugin.VOD.Services;
+using Jellyfin.Plugin.VOD.Services.Publication;
 using Jellyfin.Plugin.VOD.Services.Sync;
 using Jellyfin.Plugin.VOD.Services.Sync.Dto;
 using MediaBrowser.Common.Api;
@@ -42,6 +43,8 @@ namespace Jellyfin.Plugin.VOD.Controllers
         private readonly ILibraryManager _libraryManager;
         private readonly LibraryPublisher _publisher;
         private readonly ILogger<VodController> _logger;
+        private readonly YouTubeMetadataService? _youtubeMetadata;
+        private readonly PublicationService? _publication;
 
         /// <summary>How many videos one source's detail panel is given at most.</summary>
         /// <remarks>
@@ -64,6 +67,8 @@ namespace Jellyfin.Plugin.VOD.Controllers
         /// <param name="libraryManager">Used to list the libraries the plugin may publish into.</param>
         /// <param name="publisher">Used to check that the configured library still resolves.</param>
         /// <param name="logger">The logger.</param>
+        /// <param name="youtubeMetadata">YouTube metadata quota and status.</param>
+        /// <param name="publication">Publishes explicit administrator imports.</param>
         public VodController(
             IVodDatabase db,
             YtDlpService ytDlp,
@@ -74,7 +79,9 @@ namespace Jellyfin.Plugin.VOD.Controllers
             IHttpClientFactory httpClientFactory,
             ILibraryManager libraryManager,
             LibraryPublisher publisher,
-            ILogger<VodController> logger)
+            ILogger<VodController> logger,
+            YouTubeMetadataService? youtubeMetadata = null,
+            PublicationService? publication = null)
         {
             _db = db;
             _ytDlp = ytDlp;
@@ -86,6 +93,8 @@ namespace Jellyfin.Plugin.VOD.Controllers
             _libraryManager = libraryManager;
             _publisher = publisher;
             _logger = logger;
+            _youtubeMetadata = youtubeMetadata;
+            _publication = publication;
         }
 
         /// <summary>
@@ -526,8 +535,27 @@ namespace Jellyfin.Plugin.VOD.Controllers
                 YouTube = new YouTubeExtractionStatus(authentication, extraction.Active,
                     extraction.WaitingPlayback, extraction.BackgroundLastHour, extraction.Restriction,
                     extraction.CooldownUntil, extraction.NextRetry, extraction.NextBackgroundRetry,
-                    extraction.Started, _ytDlp.LastYouTubeError)
+                    extraction.Started, _ytDlp.LastYouTubeError),
+                YouTubeMetadata = _youtubeMetadata?.Status(),
+                YouTubePlaybackExtractions = _ytDlp.YouTubePlaybackExtractions
             });
+        }
+
+        /// <summary>Imports an enabled configured YouTube source using the administrator quota reserve.</summary>
+        [HttpPost("sources/youtube/import")]
+        [Authorize(Policy = Policies.RequiresElevation)]
+        public async Task<ActionResult> ImportYouTube([FromQuery] string url, CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance?.Configuration;
+            var source = config?.Sources.FirstOrDefault(source => source.Enabled
+                && string.Equals(source.Url, url, StringComparison.OrdinalIgnoreCase));
+            if (config is null || source is null || !YouTubeCaption.IsYouTubePage(source.Url))
+                return NotFound();
+
+            if (_publication is not null && await _publication.ImportYouTubeAsync(source, config, cancellationToken).ConfigureAwait(false))
+                return Ok();
+
+            return StatusCode(503, new { error = "YouTube metadata import deferred. Check YouTube metadata status for quota or upstream errors." });
         }
 
         /// <summary>Resolves one library role live and reduces it to what the page shows.</summary>

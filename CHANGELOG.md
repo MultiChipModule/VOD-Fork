@@ -1,5 +1,11 @@
 # Changelog
 
+## 5.3.0.0
+
+- Import YouTube metadata with the Data API v3, conditional RSS feeds, and bounded public metadata fallbacks.
+- Track a persistent daily API budget with reserved quota for explicit administrator imports.
+- Refresh playlist membership on a configurable schedule and show metadata and playback statistics separately.
+
 ## 5.2.3.0
 
 - Present each automatic YouTube caption cue on a single line while preserving cue times and creator subtitle formatting.

@@ -28,6 +28,21 @@ namespace Jellyfin.Plugin.VOD.Configuration
         /// <summary>Gets or sets the dedicated server-side YouTube cookie file.</summary>
         public string YouTubeCookiesPath { get; set; } = string.Empty;
 
+        /// <summary>Protected server-side file containing a YouTube Data API key.</summary>
+        public string YouTubeApiKeyFile { get; set; } = string.Empty;
+
+        /// <summary>Daily Data API budget for this Jellyfin instance.</summary>
+        public int YouTubeApiDailyBudget { get; set; } = 10000;
+
+        /// <summary>Units reserved for explicit administrator imports.</summary>
+        public int YouTubeApiImportReserve { get; set; } = 1000;
+
+        /// <summary>Interval between recent-upload RSS checks.</summary>
+        public int YouTubeRssIntervalMinutes { get; set; } = 30;
+
+        /// <summary>Interval between playlist membership refreshes.</summary>
+        public int YouTubePlaylistRefreshHours { get; set; } = 6;
+
         /// <summary>Gets or sets the maximum concurrent YouTube extractions.</summary>
         public int YouTubeConcurrentExtractions { get; set; } = 1;
 

@@ -29,6 +29,9 @@ namespace Jellyfin.Plugin.VOD.Services.Sync.Dto
         /// <summary>Gets the stable ID of the uploader when provided.</summary>
         public string? ChannelId { get; init; }
 
+        /// <summary>Gets the exact publication timestamp, when known.</summary>
+        public DateTimeOffset? PublishedAt { get; init; }
+
         /// <summary>Gets the upload date when supplied by the flat listing.</summary>
         public DateOnly? UploadDate { get; init; }
 

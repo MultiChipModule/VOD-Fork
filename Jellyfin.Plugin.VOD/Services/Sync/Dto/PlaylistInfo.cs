@@ -6,8 +6,14 @@ using System.Text.Json;
 namespace Jellyfin.Plugin.VOD.Services.Sync.Dto
 {
     /// <summary>The result of a yt-dlp flat-playlist invocation.</summary>
-    public sealed class PlaylistInfo
+    public sealed record PlaylistInfo
     {
+        /// <summary>Indicates that entries are incomplete and cannot authorize cleanup.</summary>
+        public bool IsPartial { get; init; }
+
+        /// <summary>Indicates a recent-upload feed that leaves the full-listing clock untouched.</summary>
+        public bool IsIncremental { get; init; }
+
         /// <summary>Gets the stable channel ID when yt-dlp identifies the owner.</summary>
         public string? ChannelId { get; init; }
 

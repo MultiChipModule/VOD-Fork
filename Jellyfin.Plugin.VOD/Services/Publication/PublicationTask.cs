@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.VOD.Configuration;
+using Jellyfin.Plugin.VOD.Services.Sync;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Logging;
 
@@ -19,6 +20,7 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
         private readonly IPublicationPass _pass;
         private readonly Func<PluginConfiguration?> _configuration;
         private readonly ILogger<PublicationTask> _logger;
+        private readonly YouTubeChannelTask? _youtubeCatalog;
 
         /// <summary>Initializes a new instance of the <see cref="PublicationTask"/> class.</summary>
         /// <param name="pass">The publication pass.</param>
@@ -29,14 +31,17 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
         /// started with.
         /// </param>
         /// <param name="logger">Logger.</param>
+        /// <param name="youtubeCatalog">Refreshes the optional channel view on the metadata schedule.</param>
         public PublicationTask(
             IPublicationPass pass,
             Func<PluginConfiguration?> configuration,
-            ILogger<PublicationTask> logger)
+            ILogger<PublicationTask> logger,
+            YouTubeChannelTask? youtubeCatalog = null)
         {
             _pass = pass;
             _configuration = configuration;
             _logger = logger;
+            _youtubeCatalog = youtubeCatalog;
         }
 
         /// <inheritdoc />
@@ -96,7 +101,23 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
             // is visible is here: the report carries it, the database does not.
             if (report.RefusedLanes.Count > 0)
                 LogEndedWithRefusedLanes(string.Join(", ", report.RefusedLanes));
+
+            if (_youtubeCatalog is not null)
+            {
+                try
+                {
+                    await _youtubeCatalog.RefreshIfDueAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (InvalidOperationException)
+                {
+                    LogCatalogDeferred();
+                }
+            }
         }
+
+        [LoggerMessage(EventId = 3, Level = LogLevel.Information,
+            Message = "YouTube channel view refresh deferred. Existing channel folders and playlists were kept.")]
+        private partial void LogCatalogDeferred();
 
         [LoggerMessage(EventId = 1, Level = LogLevel.Warning,
             Message = "VOD publication task: the plugin has no configuration yet, so nothing ran")]

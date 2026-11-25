@@ -49,17 +49,23 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
         private readonly IYtDlpService _ytDlp;
         private readonly IVodDatabase _db;
         private readonly ILogger<ListingStep> _logger;
+        private readonly YouTubeMetadataService? _youtubeMetadata;
 
         /// <summary>Initializes a new instance of <see cref="ListingStep"/>.</summary>
         /// <param name="ytDlp">The yt-dlp seam. Must be substitutable for tests.</param>
         /// <param name="db">The VOD database.</param>
         /// <param name="logger">Logger.</param>
-        public ListingStep(IYtDlpService ytDlp, IVodDatabase db, ILogger<ListingStep> logger)
+        /// <param name="youtubeMetadata">Metadata-only YouTube provider.</param>
+        public ListingStep(IYtDlpService ytDlp, IVodDatabase db, ILogger<ListingStep> logger, YouTubeMetadataService? youtubeMetadata = null)
         {
             _ytDlp = ytDlp;
             _db = db;
             _logger = logger;
+            _youtubeMetadata = youtubeMetadata;
         }
+
+        internal Task PrimeYouTubeHeadersAsync(IEnumerable<string> sources, CancellationToken token)
+            => _youtubeMetadata?.PrimeHeadersAsync(sources, token) ?? Task.CompletedTask;
 
         /// <summary>Short-listing entry cap: one YouTube page, one HTTP request.</summary>
         private const int ShortListingEntryCount = 30;
@@ -82,12 +88,14 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
         /// <param name="config">Plugin configuration.</param>
         /// <param name="now">The reference time for all clock writes.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
+        /// <param name="manual">Whether this explicit import can spend reserved Data API quota.</param>
         /// <returns>What the step produced.</returns>
         public async Task<ListingOutcome> RunAsync(
             PlannedListing planned,
             PluginConfiguration config,
             DateTimeOffset now,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool manual = false)
         {
             ArgumentNullException.ThrowIfNull(planned);
             ArgumentNullException.ThrowIfNull(config);
@@ -108,7 +116,10 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
             // erase rule, which it must not be: a deleted row is rediscovered by the next listing
             // and refetched, which is the call loop this rework exists to remove. Retention is a
             // publication filter and nothing else.
-            DateTimeOffset? noDateCutoff = null;
+            Task<PlaylistInfo?> ListAsync(int? limit, bool incremental) =>
+                _youtubeMetadata is not null && YouTubeCaption.IsYouTubePage(sourceUrl)
+                    ? _youtubeMetadata.ListAsync(sourceUrl, limit, incremental, manual, cancellationToken, lang)
+                    : _ytDlp.GetPlaylistEntriesAsync(sourceUrl, limit, null, cancellationToken, metadataLanguage: lang);
 
             // Load existing videos once: used to detect new vs. known entries, to detect the
             // "zero entries on a non-empty source" outage case, and to find the record to modify on
@@ -122,9 +133,7 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
             if (!full)
             {
                 // Short listing: exactly 30 entries, one YouTube page, one request.
-                playlist = await _ytDlp.GetPlaylistEntriesAsync(
-                    sourceUrl, ShortListingEntryCount, noDateCutoff, cancellationToken,
-                    metadataLanguage: lang).ConfigureAwait(false);
+                playlist = await ListAsync(ShortListingEntryCount, incremental: true).ConfigureAwait(false);
 
                 if (playlist is null)
                     return RecordFailure(sourceUrl, SourceStage.ShortListing, full, "listing call returned no answer");
@@ -143,9 +152,7 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
                 {
                     LogEscalating(sourceUrl);
                     full = true;
-                    playlist = await _ytDlp.GetPlaylistEntriesAsync(
-                        sourceUrl, FullListingMax(planned.Source), noDateCutoff, cancellationToken,
-                        metadataLanguage: lang).ConfigureAwait(false);
+                    playlist = await ListAsync(FullListingMax(planned.Source), incremental: false).ConfigureAwait(false);
 
                     if (playlist is null)
                         return RecordFailure(sourceUrl, SourceStage.FullListing, full: true, "listing call returned no answer after escalation");
@@ -157,9 +164,7 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
             else
             {
                 // Full listing: up to MaxVideosPerSource, or unlimited when that value is 0.
-                playlist = await _ytDlp.GetPlaylistEntriesAsync(
-                    sourceUrl, FullListingMax(planned.Source), noDateCutoff, cancellationToken,
-                    metadataLanguage: lang).ConfigureAwait(false);
+                playlist = await ListAsync(FullListingMax(planned.Source), incremental: false).ConfigureAwait(false);
 
                 if (playlist is null)
                     return RecordFailure(sourceUrl, SourceStage.FullListing, full, "listing call returned no answer");
@@ -169,7 +174,7 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
             }
 
             return Ingest(sourceUrl, planned.Source, playlist, existingByNativeId,
-                full, existing.Count, now);
+                full && !playlist.IsIncremental, existing.Count, now);
         }
 
         // ── Private helpers ─────────────────────────────────────────────────────────────────────
@@ -382,7 +387,9 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
                 }
                 else
                 {
-                    if (keepFrom is { } cutoff && entry.UploadDate is { } uploadDate && uploadDate < cutoff)
+                    var uploadDay = entry.PublishedAt is { } published
+                        ? DateOnly.FromDateTime(published.UtcDateTime) : entry.UploadDate;
+                    if (keepFrom is { } cutoff && uploadDay is { } uploadDate && uploadDate < cutoff)
                     {
                         continue;
                     }
@@ -430,22 +437,25 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
                 ? JsonSerializer.Serialize<IReadOnlyList<string>>(playlist.Tags)
                 : null;
 
+            var prior = youtube && playlist.IsPartial ? _db.GetSource(sourceUrl) : null;
             _db.UpsertSource(new SourceRecord
             {
                 Url = sourceUrl,
                 Key = VodNativeId.ForSource(sourceUrl),
-                Name = name,
-                SeriesSynopsis = playlist.Description,
-                SeriesThumbnailUrl = playlist.ThumbnailUrl,
-                SeriesBannerUrl = playlist.BannerUrl,
-                Tags = tagsJson,
+                Name = playlist.IsIncremental && prior?.Name is { } savedName && string.IsNullOrWhiteSpace(playlist.ChannelName)
+                    ? savedName : name,
+                SeriesSynopsis = playlist.Description ?? prior?.SeriesSynopsis,
+                SeriesThumbnailUrl = playlist.ThumbnailUrl ?? prior?.SeriesThumbnailUrl,
+                SeriesBannerUrl = playlist.BannerUrl ?? prior?.SeriesBannerUrl,
+                Tags = tagsJson ?? prior?.Tags,
                 VideoCount = existingCount + created,
             });
 
             // listing_count: the platform's own entry count. Null when the platform did not say
             // (channels don't report it). Null must stay null and never become zero: zero means an
             // emptied source, while null means "the platform did not say".
-            _db.SetListingCount(sourceUrl, playlist.PlaylistCount);
+            if (!playlist.IsIncremental)
+                _db.SetListingCount(sourceUrl, playlist.PlaylistCount);
 
             // Positions and listing timestamps. TouchListedAt is called only for entries THIS
             // listing saw — a short listing touches its 30 only, which is why CleanupAllowed is
@@ -474,7 +484,7 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
             // MaxVideosPerSource is the deliberate way to shrink a source, so the cap is the
             // expected count — nor below the floor, where proportions are meaningless and a
             // three-video source dropping to one is ordinary churn.
-            var cleanupAllowed = full;
+            var cleanupAllowed = full && !playlist.IsPartial;
             string? detail = null;
             var capped = sourceDef.MaxVideosPerSource > 0
                 && deduped.Count >= sourceDef.MaxVideosPerSource;
@@ -513,7 +523,9 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
                 return;
             }
 
-            if (entry.UploadDate is { } date && row.PublishedAt is null)
+            if (entry.PublishedAt is { } published)
+                row.PublishedAt = published;
+            else if (entry.UploadDate is { } date && row.PublishedAt is null)
                 row.PublishedAt = new DateTimeOffset(date.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc));
             row.Description = entry.Description ?? row.Description;
             row.ThumbnailUrl = entry.ThumbnailUrl ?? row.ThumbnailUrl;

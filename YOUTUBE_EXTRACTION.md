@@ -1,8 +1,19 @@
 # YouTube extraction and authentication
 
-VOD-Fork uses yt-dlp flat listings to import channel and playlist metadata, with YouTube oEmbed for standalone public video URLs. Listings reuse the existing short and full sync schedule and update known videos in place. VOD-Fork publishes as soon as it has a public title and URL. It stores descriptions, thumbnails and dates when YouTube provides them. yt-dlp can derive approximate dates from the relative dates on a channel page. Retention uses the available dates, and entries with unknown dates remain eligible until a date becomes available.
+VOD-Fork prefers the YouTube Data API v3 for initial channel imports, historical uploads, playlist discovery and detailed video metadata. It batches up to 50 items per API request where the endpoint supports it. Once a channel's ID is known, recent uploads are checked with conditional RSS requests every 30 minutes by default. Playlist membership refreshes every six hours. Both intervals are configurable under **YouTube metadata**. The existing publication task wakes every 15 minutes, so actual work runs on the first scheduled pass after it becomes due.
+
+With no API key, VOD-Fork uses public RSS and oEmbed for standalone videos, plus flat listings capped at 100 entries when a source needs discovery or history. A channel URL with a stable `/channel/UC…` ID can use RSS even if flat listing is suspended. YouTube Shorts and live channel tabs still use bounded flat listings to preserve their tab membership. Truncated, failed or quota-limited responses leave published items in place. Full historical imports and complete membership for large playlists work best with an API key.
 
 The first playback resolves the media, probes it for Jellyfin negotiation, and fetches available English subtitles. The resolution cache coalesces concurrent requests for the same media. VOD-Fork can fill in missing metadata and discover original quality tiers from that same extraction. New tiers appear as alternate sources after the next successful source sync. Previously published quality variants remain available as before. The plugin stores no video downloads. Caption files are cached locally and served through the existing authenticated subtitle delivery.
+
+## Configure a Data API key
+
+1. In Google Cloud, create or select a project, enable **YouTube Data API v3**, and create an API key. Restrict the key to that API. Apply an IP restriction if your Jellyfin server has a stable outbound IP.
+2. Store only the key in a private text file. Set the Jellyfin service account as the owner and set owner-only permissions, for example `chmod 600 youtube-api-key.txt`. Mount its parent directory read-only inside the Jellyfin container. Keep the key out of plugin XML, repositories and unprotected backups.
+3. Open **Dashboard → Plugins → VOD → YouTube metadata**, enter the absolute container path such as `/config/private/youtube-api-key.txt`, and save. The dashboard reports whether the key file is readable. The first API request reports API or project errors there.
+4. To import a saved, enabled source immediately, open its **Detail** panel and select **Import now**. The default local budget is 10,000 units per Pacific day, with 1,000 reserved for explicit imports. Match the local budget to the project's actual allowance. Only VOD-Fork's requests count in its dashboard, and Google also counts other callers sharing the project.
+
+The API key is for public library metadata. The dedicated YouTube cookie file and JavaScript runtime remain the playback settings. A future per-user Google OAuth flow will have its own credentials and consent.
 
 ## Configure Jellyfin
 
@@ -20,4 +31,4 @@ A bot challenge or HTTP 429 suspends new YouTube extractions for one hour by def
 
 ## Install and roll back
 
-Use the [VOD-Fork catalog](https://raw.githubusercontent.com/MultiChipModule/VOD-Fork/main/manifest.json) under **Dashboard → Plugins → Repositories**. Install VOD-Fork 5.2.2.0 and restart Jellyfin. To roll back, stop Jellyfin and replace the installed version with 5.2.1.0 or 5.2.0.0 from the same catalog or the [previous release ZIP](https://github.com/MultiChipModule/VOD-Fork/releases/tag/v5.2.0.0). Keep the existing plugin data and Jellyfin user data when changing versions. Follow the backup and manual replacement steps in [PHASE1_INSTALL.md](PHASE1_INSTALL.md).
+Use the [VOD-Fork catalog](https://raw.githubusercontent.com/MultiChipModule/VOD-Fork/refs/heads/main/manifest.json) under **Dashboard → Plugins → Repositories**. Install VOD-Fork 5.3.0.0 and restart Jellyfin. To roll back, stop Jellyfin and replace the installed version with 5.2.3.0 from the same catalog or the [previous release ZIP](https://github.com/MultiChipModule/VOD-Fork/releases/tag/v5.2.3.0). Keep the existing plugin data and Jellyfin user data when changing versions. Follow the backup and manual replacement steps in [PHASE1_INSTALL.md](PHASE1_INSTALL.md).

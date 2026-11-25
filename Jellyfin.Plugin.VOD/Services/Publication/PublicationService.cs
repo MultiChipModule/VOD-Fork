@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.VOD.Configuration;
@@ -189,6 +190,9 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
                     break;
                 }
 
+                await _listing.PrimeYouTubeHeadersAsync(work
+                    .Where(item => item.Listing is { Full: true }).Select(item => item.Source.Url), cancellationToken).ConfigureAwait(false);
+
                 for (var i = 0; i < work.Count; i++)
                 {
                     // Between two sources. Never in the middle of one: the steps write as they go,
@@ -288,11 +292,20 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
         /// two concurrent passes loses its items.
         /// </para>
         /// </remarks>
+        internal async Task<bool> ImportYouTubeAsync(SourceDefinition source, PluginConfiguration config, CancellationToken token)
+        {
+            var result = await RunOneSourceAsync(
+                new SourceWork(source, new PlannedListing(source, Full: true, ListingReason.FullListingDue)),
+                config, DateTimeOffset.UtcNow, token, manual: true).ConfigureAwait(false);
+            return result.Listed > 0;
+        }
+
         private async Task<SourceTally> RunOneSourceAsync(
             SourceWork work,
             PluginConfiguration config,
             DateTimeOffset turnNow,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool manual = false)
         {
             var source = work.Source;
 
@@ -312,7 +325,7 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
                     _db.ClearFullListedAt(source.Url);
 
                 var outcome = await _listing
-                    .RunAsync(planned, config, turnNow, cancellationToken)
+                    .RunAsync(planned, config, turnNow, cancellationToken, manual)
                     .ConfigureAwait(false);
 
                 cleanupAllowed = outcome.CleanupAllowed;

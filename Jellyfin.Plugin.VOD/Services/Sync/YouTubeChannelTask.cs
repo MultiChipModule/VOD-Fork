@@ -22,6 +22,9 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
         private readonly Func<PluginConfiguration?> _configuration;
         private readonly IVodDatabase _database;
         private readonly IYtDlpService _ytDlp;
+        private readonly YouTubeMetadataService? _metadata;
+        private static readonly SemaphoreSlim _catalogGate = new(1);
+        private static DateTimeOffset _nextScheduledRefresh;
         private readonly ILibraryManager _library;
         private readonly LibraryPublisher _publisher;
         private readonly ILogger<YouTubeChannelTask> _logger;
@@ -38,8 +41,10 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
         /// <param name="library">Resolves existing Jellyfin playback items.</param>
         /// <param name="publisher">Updates the native channel folders and playlist links.</param>
         /// <param name="logger">Reports discovery and publication summaries.</param>
+        /// <param name="metadata">Shared metadata-only YouTube provider.</param>
         public YouTubeChannelTask(Func<PluginConfiguration?> configuration, IVodDatabase database,
-            IYtDlpService ytDlp, ILibraryManager library, LibraryPublisher publisher, ILogger<YouTubeChannelTask> logger)
+            IYtDlpService ytDlp, ILibraryManager library, LibraryPublisher publisher, ILogger<YouTubeChannelTask> logger,
+            YouTubeMetadataService? metadata = null)
         {
             _configuration = configuration;
             _database = database;
@@ -47,6 +52,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             _library = library;
             _publisher = publisher;
             _logger = logger;
+            _metadata = metadata;
         }
 
         /// <inheritdoc />
@@ -63,18 +69,44 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
 
         /// <inheritdoc />
         public IEnumerable<TaskTriggerInfo> GetDefaultTriggers() =>
-            [new TaskTriggerInfo { Type = TaskTriggerInfoType.IntervalTrigger, IntervalTicks = TimeSpan.FromDays(1).Ticks }];
+            [new TaskTriggerInfo { Type = TaskTriggerInfoType.IntervalTrigger, IntervalTicks = TimeSpan.FromHours(6).Ticks }];
 
         /// <inheritdoc />
-        public async Task ExecuteAsync(IProgress<double> progress, CancellationToken cancellationToken)
+        public Task ExecuteAsync(IProgress<double> progress, CancellationToken cancellationToken)
+            => RefreshAsync(progress, scheduled: false, cancellationToken);
+
+        internal Task RefreshIfDueAsync(CancellationToken cancellationToken)
+            => RefreshAsync(null, scheduled: true, cancellationToken);
+
+        private async Task RefreshAsync(IProgress<double>? progress, bool scheduled, CancellationToken cancellationToken)
         {
             var config = _configuration();
             if (config is null || string.IsNullOrWhiteSpace(config.YouTubeChannelLibraryName))
             {
-                LogNoTarget();
+                if (!scheduled)
+                    LogNoTarget();
                 return;
             }
 
+            await _catalogGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var now = DateTimeOffset.UtcNow;
+                if (scheduled && now < _nextScheduledRefresh)
+                    return;
+
+                _nextScheduledRefresh = now.AddMinutes(Math.Clamp(config.YouTubeRssIntervalMinutes, 15, 1440));
+                await RefreshCatalogAsync(config, progress, now, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _catalogGate.Release();
+            }
+        }
+
+        private async Task RefreshCatalogAsync(PluginConfiguration config, IProgress<double>? progress,
+            DateTimeOffset now, CancellationToken cancellationToken)
+        {
             if (string.Equals(config.YouTubeChannelLibraryName, config.SeriesLibraryName, StringComparison.OrdinalIgnoreCase)
                 || string.Equals(config.YouTubeChannelLibraryName, config.MoviesLibraryName, StringComparison.OrdinalIgnoreCase))
             {
@@ -87,7 +119,6 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
                 throw new InvalidOperationException("The native YouTube channel library must use Jellyfin's mixed content type.");
             }
 
-            var now = DateTimeOffset.UtcNow;
             if (now >= _checkpointUntil)
             {
                 _completedListings.Clear();
@@ -98,6 +129,9 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
                 .Select(source => (Source: source, Type: SourceTypeDetector.Detect(source.Url)))
                 .Where(entry => entry.Type is SourceType.YoutubeChannel or SourceType.YoutubePlaylist)
                 .OrderBy(entry => entry.Type == SourceType.YoutubePlaylist).ToArray();
+            if (_metadata is not null)
+                await _metadata.PrimeHeadersAsync(sources.Select(entry => entry.Source.Url), cancellationToken).ConfigureAwait(false);
+
             var excluded = config.YouTubeExcludedPlaylistIds.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
                 .ToHashSet(StringComparer.Ordinal);
             var channels = new List<ChannelSource>();
@@ -121,7 +155,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
                     throw new InvalidOperationException("YouTube did not return a stable channel ID and name. Keeping the last channel view.");
                 }
 
-                if (!isChannel && header.PlaylistCount > header.Entries.Count)
+                if (!isChannel && (header.IsPartial || header.PlaylistCount > header.Entries.Count))
                 {
                     throw new InvalidOperationException("YouTube returned an incomplete configured playlist. Keeping the last channel view.");
                 }
@@ -149,7 +183,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
                     channels.Add(new ChannelSource(channelId, header.ChannelName, null, null,
                         channelUploads, [configured, .. playlists], uploads));
                 }
-                progress.Report(80d * channels.Count / sources.Length);
+                progress?.Report(80d * channels.Count / sources.Length);
             }
 
             var catalog = YouTubeLibraryCatalog.Build(channels, excluded, now);
@@ -158,7 +192,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             LogCatalogSummary(catalog.Count, knownPlaylists.Values.Sum(playlists => playlists.Count),
                 catalog.Sum(channel => channel.Playlists.Sum(playlist => playlist.Items.Count)),
                 report.Created, report.Updated, report.Unchanged, report.Removed, skipped);
-            progress.Report(100);
+            progress?.Report(100);
         }
 
         [LoggerMessage(EventId = 1, Level = LogLevel.Information,
@@ -175,7 +209,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
         {
             var listing = await ListAsync($"https://www.youtube.com/channel/{channelId}/playlists", null, cancellationToken)
                 .ConfigureAwait(false);
-            if (listing is null)
+            if (listing is null || listing.IsPartial)
             {
                 throw new InvalidOperationException("Could not list the YouTube channel's playlists. Keeping the last channel view.");
             }
@@ -186,7 +220,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             {
                 var url = $"https://www.youtube.com/playlist?list={entry.Id}";
                 var playlist = await ListAsync(url, null, cancellationToken).ConfigureAwait(false);
-                if (playlist is null || playlist.PlaylistCount > playlist.Entries.Count)
+                if (playlist is null || playlist.IsPartial || playlist.PlaylistCount > playlist.Entries.Count)
                 {
                     throw new InvalidOperationException("YouTube returned an incomplete playlist. Keeping the last channel view.");
                 }
@@ -212,8 +246,11 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             if (_completedListings.TryGetValue(key, out var existing))
                 return existing;
 
-            var listing = await _ytDlp.GetPlaylistEntriesAsync(url, maximum, null, token).ConfigureAwait(false);
-            if (listing is not null && (maximum is not null || !(listing.PlaylistCount > listing.Entries.Count)))
+            var listing = _metadata is null
+                ? await _ytDlp.GetPlaylistEntriesAsync(url, maximum, null, token).ConfigureAwait(false)
+                : await _metadata.ListAsync(url, maximum, incremental: false, manual: false, token,
+                    headerOnly: maximum == 1, membershipOnly: true).ConfigureAwait(false);
+            if (listing is not null && (maximum is not null || (!listing.IsPartial && !(listing.PlaylistCount > listing.Entries.Count))))
                 _completedListings[key] = listing;
             return listing;
         }

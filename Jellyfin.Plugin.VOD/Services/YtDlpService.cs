@@ -37,6 +37,9 @@ namespace Jellyfin.Plugin.VOD.Services
         private readonly Func<PluginConfiguration?> _configuration;
         private readonly YouTubeExtractionGate _youtubeGate;
         private string? _lastYouTubeError;
+        private long _youtubePlaybackExtractions;
+
+        internal long YouTubePlaybackExtractions => Interlocked.Read(ref _youtubePlaybackExtractions);
 
         internal string? LastYouTubeError => Volatile.Read(ref _lastYouTubeError);
 
@@ -637,6 +640,8 @@ namespace Jellyfin.Plugin.VOD.Services
             try
             {
                 process.Start();
+                if (youtube && lane is null)
+                    Interlocked.Increment(ref _youtubePlaybackExtractions);
             }
             catch (Win32Exception) when (youtube)
             {

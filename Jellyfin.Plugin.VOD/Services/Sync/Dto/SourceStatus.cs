@@ -152,6 +152,12 @@ namespace Jellyfin.Plugin.VOD.Services.Sync.Dto
     {
         /// <summary>Current YouTube extraction state, without account credentials.</summary>
         public YouTubeExtractionStatus? YouTube { get; init; }
+
+        /// <summary>Shows Data API, RSS and metadata-only fallback activity.</summary>
+        public YouTubeMetadataStatus? YouTubeMetadata { get; init; }
+
+        /// <summary>Counts yt-dlp processes started for YouTube playback since server startup.</summary>
+        public long YouTubePlaybackExtractions { get; init; }
     }
 
     /// <summary>Credential-free YouTube extraction activity and retry times.</summary>

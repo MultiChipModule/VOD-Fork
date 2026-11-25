@@ -12,4 +12,4 @@ category: "General"
 artifacts:
   - "Jellyfin.Plugin.VOD.dll"
 changelog: |-
-  - Present automatic YouTube captions on one line per cue.
+  - Use YouTube Data API v3 and RSS for metadata-first synchronization, with quota tracking and manual import reserve.
