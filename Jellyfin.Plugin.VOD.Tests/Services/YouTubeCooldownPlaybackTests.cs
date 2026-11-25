@@ -20,6 +20,7 @@ using MediaBrowser.Model.Dlna;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
+using MediaBrowser.Model.Session;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Abstractions;
@@ -152,6 +153,49 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
             Assert.Single(File.ReadAllLines(yt.ArgumentsPath));
         }
 
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task ReportingToggleControlsNativeModernAndLegacyRequests(bool enabled)
+        {
+            if (OperatingSystem.IsWindows())
+                return;
+
+            using var yt = new MockYouTubeExtractor("exit 1");
+            yt.Configuration.EnableYouTubePlaybackReporting = enabled;
+            using var fixture = new PlaybackFixture(yt);
+            var expected = enabled ? fixture.ItemId : fixture.AlternateId;
+
+            foreach (var action in new[] { "OnPlaybackStart", "OnPlaybackProgressLegacy", "OnPlaybackStoppedLegacy" })
+            {
+                var args = new Dictionary<string, object?>
+                {
+                    ["itemId"] = fixture.AlternateId,
+                    ["positionTicks"] = 300L,
+                    ["playSessionId"] = "existing-session",
+                    ["isPaused"] = true
+                };
+                await fixture.Dispatch("PlaystateController", action, arguments: args);
+                Assert.Equal(expected, args["itemId"]);
+                Assert.Equal(300L, args["positionTicks"]);
+                Assert.Equal("existing-session", args["playSessionId"]);
+                Assert.Equal(true, args["isPaused"]);
+                if (enabled)
+                    Assert.Equal(fixture.AlternateId.ToString("N"), args["mediaSourceId"]);
+            }
+
+            var paused = new PlaybackProgressInfo { ItemId = fixture.AlternateId, IsPaused = true,
+                PositionTicks = 350, PlayMethod = PlayMethod.DirectStream, PlaySessionId = "existing-session" };
+            await fixture.Dispatch("PlaystateController", "ReportPlaybackProgress", arguments:
+                new Dictionary<string, object?> { ["playbackProgressInfo"] = paused });
+            Assert.Equal(expected, paused.ItemId);
+            Assert.Equal(PlayMethod.DirectStream, paused.PlayMethod);
+            Assert.True(paused.IsPaused);
+            Assert.Equal(350, paused.PositionTicks);
+            Assert.Equal(4, fixture.NativeInvocations);
+            Assert.Empty(File.ReadAllLines(yt.ArgumentsPath));
+        }
+
         [Fact]
         public async Task MissingAlternateDoesNotEvictTheSharedMasterOrTriggerAnotherExtraction()
         {
@@ -212,6 +256,9 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
                 _yt = yt;
                 var item = new TestVideo { Id = _itemId, Path = LocalStream };
                 item.SetProviderId("VOD", "test");
+                var alternate = new TestVideo { Id = AlternateId, PrimaryVersionId = item.Id, Path = LocalStream + "?height=720" };
+                alternate.SetProviderId("VOD", "test");
+                item.Alternate = alternate;
                 var user = new User("Viewer", "provider", "reset-provider");
                 var users = Substitute.For<IUserManager>();
                 var library = Substitute.For<ILibraryManager>();
@@ -219,6 +266,7 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
                 var streams = Substitute.For<IMediaStreamRepository>();
                 users.GetUserById(_userId).Returns(user);
                 library.GetItemById<BaseItem>(_itemId, user).Returns(item);
+                library.GetItemById<BaseItem>(AlternateId, user).Returns(alternate);
                 database.GetVideoByUuid("test").Returns(new VideoRecord { Id = "test", VideoUrl = Page });
                 streams.GetMediaStreams(Arg.Any<MediaStreamQuery>())
                     .Returns(registeredLayout ? [new MediaStream { Index = 0, Type = MediaStreamType.Video, Codec = "h264" }] : []);
@@ -231,6 +279,10 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
                 _services = new ServiceCollection().AddSingleton(_filter).AddSingleton(Transcodes).BuildServiceProvider();
             }
 
+            internal Guid ItemId => _itemId;
+
+            internal Guid AlternateId { get; } = Guid.NewGuid();
+
             internal IMediaSourceManager MediaSources { get; } = Substitute.For<IMediaSourceManager>();
 
             internal IMediaEncoder Encoder { get; } = Substitute.For<IMediaEncoder>();
@@ -239,7 +291,8 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
 
             internal int NativeInvocations { get; private set; }
 
-            internal async Task<ActionExecutingContext> Dispatch(string controller, string action, string? playSession = null)
+            internal async Task<ActionExecutingContext> Dispatch(string controller, string action, string? playSession = null,
+                IDictionary<string, object?>? arguments = null)
             {
                 var http = new DefaultHttpContext
                 {
@@ -250,7 +303,7 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
                 var actionContext = new ActionContext(http, new RouteData(), descriptor);
                 var filters = new List<IFilterMetadata>();
                 var context = new ActionExecutingContext(actionContext, filters,
-                    new Dictionary<string, object?> { ["itemId"] = _itemId, ["playSessionId"] = playSession }, this);
+                    arguments ?? new Dictionary<string, object?> { ["itemId"] = _itemId, ["playSessionId"] = playSession }, this);
                 await new CaptionPlaybackDispatch(() => _yt.Configuration).OnActionExecutionAsync(context, () =>
                 {
                     NativeInvocations++;
@@ -274,9 +327,13 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
 
         private sealed class TestVideo : Video
         {
+            internal Video? Alternate { get; set; }
+
             protected override IEnumerable<(BaseItem Item, MediaBrowser.Model.Dto.MediaSourceType MediaSourceType)> GetAllItemsForMediaSources()
             {
                 yield return (this, MediaBrowser.Model.Dto.MediaSourceType.Default);
+                if (Alternate is not null)
+                    yield return (Alternate, MediaBrowser.Model.Dto.MediaSourceType.Default);
             }
         }
     }

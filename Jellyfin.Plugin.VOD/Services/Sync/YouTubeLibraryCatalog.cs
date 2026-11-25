@@ -18,11 +18,14 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
     internal static class YouTubeLibraryCatalog
     {
         internal static IReadOnlyList<ChannelNode> Build(
-            IReadOnlyList<ChannelSource> sources, IReadOnlySet<string> excluded, DateTimeOffset now)
+            IReadOnlyList<ChannelSource> sources, IReadOnlySet<string> excluded, DateTimeOffset now,
+            IReadOnlySet<string>? excludedVideos = null, IReadOnlyList<ChannelUpload>? extraItems = null)
         {
             var uploads = sources.SelectMany(source => source.Uploads).ToHashSet();
-            var retained = sources.SelectMany(source => source.Uploads.Concat(source.PlaylistItems ?? []))
-                .Where(upload => upload.Video.NativeId is not null && upload.ItemId != Guid.Empty
+            var retained = sources.SelectMany(source => source.Uploads.Concat(source.PlaylistItems ?? [])).Concat(extraItems ?? [])
+                .Where(upload => upload.Video.NativeId is { } id && upload.ItemId != Guid.Empty
+                    && upload.Video.LiveStatus == LiveStatus.NotLive && !upload.Video.Extras.IsYouTubeBroadcast
+                    && excludedVideos?.Contains(id) != true
                     && (upload.RetentionDays <= 0 || upload.Video.PublishedAt is not { } published
                         || published >= now.AddDays(-upload.RetentionDays)))
                 .ToLookup(upload => upload.Video.NativeId!, StringComparer.Ordinal);
@@ -53,7 +56,6 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
                 .DistinctBy(playlist => playlist.Id, StringComparer.Ordinal)
                 .Select(playlist => new PlaylistNode(playlist.Id, playlist.Name, playlist.Artwork, playlist.Description,
                     playlist.VideoIds.Where(canonical.ContainsKey).Select(id => canonical[id]).Distinct().ToArray()))
-                .Where(playlist => playlist.Items.Count > 0)
                 .OrderBy(playlist => playlist.Name, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(playlist => playlist.Id, StringComparer.Ordinal);
 

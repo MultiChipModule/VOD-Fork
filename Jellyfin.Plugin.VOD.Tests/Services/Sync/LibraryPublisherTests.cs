@@ -57,17 +57,28 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Sync
         [Fact]
         public async Task NativeCatalogCreatesOrderedPlaylistsWithoutCreatingPlaybackItems()
         {
-            var root = new Folder { Id = Guid.NewGuid() };
+            var temporary = Directory.CreateTempSubdirectory("vod-catalog-");
+            var root = new Folder { Id = Guid.NewGuid(), Path = temporary.FullName };
+            var channelPath = LibraryPublisher.CatalogPath(root.Path, "stable", playlist: false);
+            var uploadsPath = LibraryPublisher.CatalogPath(channelPath, "uploads", playlist: true);
+            var playlistPath = LibraryPublisher.CatalogPath(channelPath, "playlist", playlist: true);
             var channelId = Guid.NewGuid();
             var uploadsId = Guid.NewGuid();
             var playlistId = Guid.NewGuid();
             var first = Guid.NewGuid();
             var second = Guid.NewGuid();
-            var channelKey = $"vod-youtube:{root.Id:N}:stable";
-            _library.GetNewItemId(channelKey, typeof(Folder)).Returns(channelId);
-            _library.GetNewItemId($"{channelKey}:uploads", typeof(Playlist)).Returns(uploadsId);
-            _library.GetNewItemId($"{channelKey}:playlist", typeof(Playlist)).Returns(playlistId);
+            _library.GetNewItemId(channelPath, typeof(Folder)).Returns(channelId);
+            _library.GetNewItemId(uploadsPath, typeof(Playlist)).Returns(uploadsId);
+            _library.GetNewItemId(playlistPath, typeof(Playlist)).Returns(playlistId);
+            var oldFolder = new Folder { Id = Guid.NewGuid() };
+            oldFolder.SetProviderId(LibraryPublisher.ChannelCatalogProvider, "old-virtual-catalog");
+            var original = new Movie { Id = first, Name = "Canonical One", RunTimeTicks = 100 };
+            var another = new Movie { Id = second, Name = "Canonical Two", RunTimeTicks = 200 };
             _library.GetItemList(Arg.Any<InternalItemsQuery>()).Returns([]);
+            _library.GetItemList(Arg.Is<InternalItemsQuery>(query => query.ParentId == root.Id)).Returns([oldFolder]);
+            _library.GetItemList(Arg.Is<InternalItemsQuery>(query => query.ItemIds.Contains(first))).Returns([original, another]);
+            _library.GetItemById(first).Returns(original);
+            _library.GetItemById(second).Returns(another);
 
             await _publisher.PublishChannelCatalogAsync(root,
                 [new ChannelNode("stable", "Creator", null, null,
@@ -88,8 +99,16 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Sync
             Assert.Equal(new Guid?[] { first, second }, uploads.LinkedChildren.Select(link => link.ItemId));
             Assert.Equal(new Guid?[] { second, first }, playlist.LinkedChildren.Select(link => link.ItemId));
             Assert.True(uploads.IsPreSorted);
+            Assert.True(playlist.OpenAccess);
+            Assert.True(Directory.Exists(channelPath));
+            Assert.EndsWith("[playlist]", playlist.Path, StringComparison.Ordinal);
             Assert.Equal("Original playlist", playlist.Name);
             Assert.Equal("Description", playlist.Overview);
+            Assert.Equal(new BaseItem[] { another, original }, playlist.GetManageableItems().Select(entry => entry.Item2));
+            _library.Received(1).DeleteItem(oldFolder, Arg.Any<DeleteOptions>(), true);
+            _library.DidNotReceive().DeleteItem(Arg.Any<Video>(), Arg.Any<DeleteOptions>(), Arg.Any<bool>());
+            Assert.Equal(100, original.RunTimeTicks);
+            temporary.Delete(recursive: true);
         }
 
         [Fact]

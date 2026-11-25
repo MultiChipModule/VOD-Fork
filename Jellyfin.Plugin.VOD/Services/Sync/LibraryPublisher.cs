@@ -681,6 +681,8 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
 
             var episode = existing ?? new Episode { Id = itemId };
             var displayNumber = hideSyntheticYouTubeNumbers ? EpisodeNumberForPresentation(video) : video.EpisodeNumber;
+            var displaySeason = hideSyntheticYouTubeNumbers && displayNumber is null && YouTubeCaption.IsYouTubePage(video.VideoUrl)
+                ? null : season.IndexNumber;
 
             var overview = BuildVideoOverview(video);
             var premiereDate = PremiereDateFor(video);
@@ -696,7 +698,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
                 || reparent
                 || !string.Equals(episode.Path, member.Path, StringComparison.Ordinal)
                 || episode.IndexNumber != displayNumber
-                || episode.ParentIndexNumber != season.IndexNumber
+                || episode.ParentIndexNumber != displaySeason
                 || episode.PremiereDate != premiereDate
                 || episode.ProductionYear != productionYear
                 || episode.RunTimeTicks != runTimeTicks
@@ -711,7 +713,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             episode.ParentId = season.Id;
             episode.Path = member.Path;
             episode.IndexNumber = displayNumber;
-            episode.ParentIndexNumber = season.IndexNumber;
+            episode.ParentIndexNumber = displaySeason;
             episode.PremiereDate = premiereDate;
             episode.ProductionYear = productionYear;
             episode.RunTimeTicks = runTimeTicks;
@@ -828,10 +830,12 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             {
                 var seriesKey = season.SeriesPresentationUniqueKey;
                 var displayNumber = hideSyntheticYouTubeNumbers ? EpisodeNumberForPresentation(video) : video.EpisodeNumber;
+                var displaySeason = hideSyntheticYouTubeNumbers && displayNumber is null && YouTubeCaption.IsYouTubePage(video.VideoUrl)
+                    ? null : season.IndexNumber;
                 changed |= episode.SeasonId != season.Id
                     || episode.SeriesId != season.SeriesId
                     || episode.IndexNumber != displayNumber
-                    || episode.ParentIndexNumber != season.IndexNumber
+                    || episode.ParentIndexNumber != displaySeason
                     || !string.Equals(episode.SeriesPresentationUniqueKey, seriesKey, StringComparison.Ordinal);
 
                 episode.SeasonId = season.Id;
@@ -840,7 +844,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
                 episode.SeriesName = season.SeriesName;
                 episode.SeriesPresentationUniqueKey = seriesKey;
                 episode.IndexNumber = displayNumber;
-                episode.ParentIndexNumber = season.IndexNumber;
+                episode.ParentIndexNumber = displaySeason;
             }
 
             if (changed)

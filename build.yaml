@@ -12,4 +12,4 @@ category: "General"
 artifacts:
   - "Jellyfin.Plugin.VOD.dll"
 changelog: |-
-  - Configure the YouTube Data API key through a password field with protected server-side storage.
+  - Publish scan-stable native YouTube channel playlists and normalize native playback reporting for Jellystat.

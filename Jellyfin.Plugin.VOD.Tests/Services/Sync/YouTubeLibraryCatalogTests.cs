@@ -45,13 +45,37 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Sync
                  Source("two", "Second", [duplicate])],
                 new HashSet<string>(StringComparer.Ordinal) { "excluded" }, Now);
             var uploads = channels[0].Playlists[0];
-            var normal = channels[0].Playlists[1];
-            Assert.Equal(2, channels[0].Playlists.Count);
+            var normal = Assert.Single(channels[0].Playlists, playlist => playlist.Id == "keep");
+            Assert.Equal(3, channels[0].Playlists.Count);
+            Assert.Empty(Assert.Single(channels[0].Playlists, playlist => playlist.Id == "empty").Items);
             Assert.Equal(2, uploads.Items.Count);
             Assert.Equal(boundary.ItemId, uploads.Items[1]);
             Assert.Equal([boundary.ItemId, uploads.Items[0]], normal.Items);
             Assert.Equal(channels[1].Playlists[0].Items[0], uploads.Items[0]);
             Assert.DoesNotContain(expired.ItemId, uploads.Items);
+        }
+
+        [Fact]
+        public void KnownShortsAndBroadcastsAreOmittedWhileShortDurationUploadsStillAppear()
+        {
+            var regular = Upload("regular", 1);
+            regular.Video.DurationSeconds = 20;
+            var shorts = Upload("shorts-tab", 1);
+            var archived = Upload("archived", 1);
+            var active = Upload("active", 1);
+            active.Video.LiveStatus = LiveStatus.Live;
+            var upcoming = Upload("upcoming", 1);
+            upcoming.Video.LiveStatus = LiveStatus.Upcoming;
+            var standalone = Upload("standalone", 2);
+
+            var nodes = YouTubeLibraryCatalog.Build(
+                [Source("ucid", "Channel", [regular, shorts, archived, active, upcoming],
+                    Playlist("playlist", "Playlist", "shorts-tab", "active", "upcoming", "archived", "standalone", "regular"))],
+                new HashSet<string>(), Now, new HashSet<string> { "shorts-tab", "archived" }, [standalone]);
+
+            var playlists = Assert.Single(nodes).Playlists;
+            Assert.Equal([regular.ItemId], playlists[0].Items);
+            Assert.Equal([standalone.ItemId, regular.ItemId], playlists[1].Items);
         }
 
         [Fact]

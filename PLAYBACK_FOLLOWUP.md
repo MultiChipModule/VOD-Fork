@@ -17,3 +17,13 @@ Enable **Log YouTube playback negotiation (for troubleshooting)** for the follow
 - **Infuse.** The unresolved distinction is whether Infuse requests native dynamic HLS or requests a static, range-addressed media resource. Capture one failed attempt with the existing **VOD PlaybackInfo** and **VOD media request** diagnostics. Record the action, method, status, content type and whether there was a Range header. Remove tokens, signed URLs and private hostnames. No new endpoint or unverified client-specific playback path was added.
 
 For rollback, stop Jellyfin and restore the backed-up plugin directory and metadata, or select the confirmed working **5.1.2.0** release from the catalog. Keep the playback libraries and the existing VOD database.
+
+## VOD-Fork 5.4.0.0 reporting
+
+Jellystat reads native Jellyfin sessions over WebSocket or HTTP and matches the now-playing item to its library inventory. Its optional Playback Reporting import uses the official plugin's recorded item ID. Playback Reporting creates a tracker from PlaybackStart and checks that the same item and user are still active after 20 seconds. An item ID mismatch between the event and session can therefore lose the record.
+
+Earlier VOD-Fork normalization handled alternate IDs only in JSON reports. The older PlayingItems routes passed the alternate ID directly into Jellyfin. A JSON report carrying an already canonical ItemId could also carry an alternate Item DTO, which Jellyfin uses directly. VOD-Fork now normalizes the legacy arguments and lets Jellyfin rebuild stale DTOs from the canonical library item. It keeps the actual MediaSourceId for Jellyfin's per-version progress and retains the client's pause state, position and playback method. It forwards the original request once through Jellyfin's native handler.
+
+Toggle **Dashboard → Plugins → VOD → Playback → Enable YouTube playback reporting compatibility (Jellystat)** to enable or disable this normalization. It is enabled by default. Jellyfin owns the underlying reporting in either mode.
+
+For production verification, play the same video from **Videos** and a playlist. Use original and alternate quality, pause and resume, and let each session run past 20 seconds and Jellystat's polling interval. Compare /Sessions with /Items?Ids=<canonical-id>&ExcludeLocationTypes=Virtual and verify the original playback library is included in Jellystat's library sync. For episodes, check the canonical episode ID and the corresponding series ID. Compare Jellystat activity and any Playback Reporting record after stopping. A client that only requests media and never reports playback cannot create native reporting events through this compatibility setting.

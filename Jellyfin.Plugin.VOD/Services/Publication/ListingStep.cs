@@ -523,6 +523,9 @@ namespace Jellyfin.Plugin.VOD.Services.Publication
                 return;
             }
 
+            if (entry.IsBroadcast && !row.Extras.IsYouTubeBroadcast)
+                row.Extras = row.Extras with { IsYouTubeBroadcast = true };
+
             if (entry.PublishedAt is { } published)
                 row.PublishedAt = published;
             else if (entry.UploadDate is { } date && row.PublishedAt is null)

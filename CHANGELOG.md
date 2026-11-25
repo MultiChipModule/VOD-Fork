@@ -1,5 +1,11 @@
 # Changelog
 
+## 5.4.0.0
+
+- Normalize item identities on modern and legacy Jellyfin playback requests, with an administrator toggle for Jellystat compatibility.
+- Publish scan-stable native YouTube channel folders and ordered playlists with library access checks.
+- Filter known Shorts and broadcasts from the native view, and suppress synthetic display numbering while preserving playback IDs.
+
 ## 5.3.1.0
 
 - Save, replace, or clear the YouTube Data API key from a masked dashboard input with protected storage and support for legacy key files.

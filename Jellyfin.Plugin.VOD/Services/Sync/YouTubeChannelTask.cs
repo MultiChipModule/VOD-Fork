@@ -33,6 +33,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
         // A successful publish drops the checkpoint so the next sync discovers changes.
         private readonly Dictionary<(string Url, int? Maximum), PlaylistInfo> _completedListings = new();
         private DateTimeOffset _checkpointUntil;
+        private readonly HashSet<string> _knownExcludedVideos = new(StringComparer.Ordinal);
 
         /// <summary>Initializes the channel discovery and publication task.</summary>
         /// <param name="configuration">Reads current plugin settings.</param>
@@ -127,7 +128,9 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
 
             var sources = config.Sources.Where(source => source.Enabled)
                 .Select(source => (Source: source, Type: SourceTypeDetector.Detect(source.Url)))
-                .Where(entry => entry.Type is SourceType.YoutubeChannel or SourceType.YoutubePlaylist)
+                .Where(entry => YouTubeCaption.IsYouTubePage(entry.Source.Url)
+                    && (entry.Type == SourceType.YoutubePlaylist
+                        || (entry.Type == SourceType.YoutubeChannel && YtDlpService.TryGetYouTubeVideoId(entry.Source.Url) is null)))
                 .OrderBy(entry => entry.Type == SourceType.YoutubePlaylist).ToArray();
             if (_metadata is not null)
                 await _metadata.PrimeHeadersAsync(sources.Select(entry => entry.Source.Url), cancellationToken).ConfigureAwait(false);
@@ -186,7 +189,58 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
                 progress?.Report(80d * channels.Count / sources.Length);
             }
 
-            var catalog = YouTubeLibraryCatalog.Build(channels, excluded, now);
+            var standalone = config.Sources.Where(source => source.Enabled && YouTubeCaption.IsYouTubePage(source.Url)
+                    && YtDlpService.TryGetYouTubeVideoId(source.Url) is not null
+                    && SourceTypeDetector.Detect(source.Url) != SourceType.YoutubePlaylist)
+                .SelectMany(source => _database.GetVideosBySource(source.Url)
+                    .Where(row => Publishability.IsPublishable(row, source.RetentionDays, now))
+                    .Select(row => new ChannelUpload(row, FindPrimary(row.Id, source.Mode), source.RetentionDays))).ToArray();
+            var candidates = channels.SelectMany(channel => channel.Uploads.Concat(channel.PlaylistItems ?? []))
+                .Concat(standalone).ToArray();
+            var ids = candidates.Select(upload => upload.Video.NativeId).OfType<string>().ToHashSet(StringComparer.Ordinal);
+            _knownExcludedVideos.IntersectWith(ids);
+            foreach (var (source, _) in sources)
+            {
+                if (new Uri(source.Url).AbsolutePath.TrimEnd('/').Split('/')[^1] is "shorts" or "streams" or "live")
+                    _knownExcludedVideos.UnionWith(_database.GetVideosBySource(source.Url)
+                        .Select(row => row.NativeId).OfType<string>());
+            }
+            if (ids.Count > 0 && _metadata is not null)
+            {
+                if (await _metadata.GetCatalogBroadcastsAsync(ids, cancellationToken).ConfigureAwait(false) is { } broadcasts)
+                    _knownExcludedVideos.UnionWith(broadcasts);
+
+                foreach (var channelId in channels.Select(channel => channel.Id).Distinct(StringComparer.Ordinal))
+                {
+                    foreach (var tab in new[] { "shorts", "streams" })
+                    {
+                        var listing = await _metadata.ListAsync($"https://www.youtube.com/channel/{channelId}/{tab}",
+                            100, incremental: false, manual: false, cancellationToken).ConfigureAwait(false);
+                        if (listing is not null)
+                            _knownExcludedVideos.UnionWith(listing.Entries.Select(entry => entry.Id).Where(ids.Contains));
+                    }
+                }
+            }
+
+            var catalog = YouTubeLibraryCatalog.Build(channels, excluded, now, _knownExcludedVideos, standalone);
+            var visibleIds = catalog.SelectMany(channel => channel.Playlists.SelectMany(playlist => playlist.Items)).ToHashSet();
+            foreach (var candidate in candidates.Where(candidate => visibleIds.Contains(candidate.ItemId)).DistinctBy(candidate => candidate.ItemId))
+            {
+                if (candidate.Video.EpisodeNumber.HasValue
+                    && LibraryPublisher.EpisodeNumberForPresentation(candidate.Video) is null
+                    && _library.GetItemById(candidate.ItemId) is Episode episode)
+                {
+                    foreach (var version in episode.GetAllVersions().OfType<Episode>())
+                    {
+                        if (version.IndexNumber is null && version.ParentIndexNumber is null)
+                            continue;
+                        version.IndexNumber = null;
+                        version.ParentIndexNumber = null;
+                        await version.UpdateToRepositoryAsync(MediaBrowser.Controller.Library.ItemUpdateType.MetadataEdit, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                }
+            }
             var report = await _publisher.PublishChannelCatalogAsync(target.Anchor, catalog, cancellationToken).ConfigureAwait(false);
             _completedListings.Clear();
             LogCatalogSummary(catalog.Count, knownPlaylists.Values.Sum(playlists => playlists.Count),

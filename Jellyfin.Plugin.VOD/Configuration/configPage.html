@@ -175,6 +175,14 @@
                     </div>
 
                     <h2>Playback</h2>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label>
+                            <input is="emby-checkbox" type="checkbox" id="enableYouTubePlaybackReporting" />
+                            <span>Enable YouTube playback reporting compatibility (Jellystat)</span>
+                        </label>
+                        <div class="fieldDescription">Use the library item ID in Jellyfin's native playback reports while preserving the selected quality.</div>
+                    </div>
+
 
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="cacheMinutes">Playlist cache (minutes)</label>
@@ -341,8 +349,9 @@
 
                     <div class="inputContainer">
                         <label class="inputLabel" for="youTubeChannelLibraryName">YouTube channel library (mixed)</label>
-                        <input id="youTubeChannelLibraryName" is="emby-input" type="text" />
-                        <div class="fieldDescription">Optional separate library for channel folders and ordered native playlists.</div>
+                        <select id="youTubeChannelLibraryName" is="emby-select" class="emby-select"></select>
+                        <div class="fieldDescription">Create a separate Mixed Content library, then select it here.
+                            Viewers need access to this library and the original VOD playback library.</div>
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel" for="youTubeExcludedPlaylistIds">Excluded YouTube playlist IDs</label>
@@ -713,12 +722,35 @@
             function populateLibraries(config) {
                 var movies = document.getElementById('moviesLibraryName');
                 var series = document.getElementById('seriesLibraryName');
+                var youtube = document.getElementById('youTubeChannelLibraryName');
+                function fillYouTubeLibraries(options) {
+                    var name = config.YouTubeChannelLibraryName || '';
+                    var blocked = [config.MoviesLibraryName || 'VOD', config.SeriesLibraryName || 'VOD'].map(function (value) {
+                        return value.toLowerCase();
+                    });
+                    youtube.innerHTML = '';
+                    selectOnly(youtube, '', 'Disabled');
+                    var matched = false;
+                    options.filter(function (option) {
+                        return (!option.CollectionType || option.CollectionType.toLowerCase() === 'mixed')
+                            && !blocked.includes(option.Name.toLowerCase());
+                    }).forEach(function (option) {
+                        var item = document.createElement('option');
+                        item.value = option.Name;
+                        item.textContent = option.Name;
+                        item.selected = option.Name.toLowerCase() === name.toLowerCase();
+                        matched = matched || item.selected;
+                        youtube.appendChild(item);
+                    });
+                    if (name && !matched) selectOnly(youtube, name, ' (check library settings)');
+                }
                 return ApiClient.ajax({
                     url: ApiClient.getUrl('VOD/libraries'),
                     type: 'GET',
                     dataType: 'json'
                 }).then(function (options) {
                     var all = options || [];
+                    fillYouTubeLibraries(all);
                     fillLibrarySelect(
                         movies,
                         all.filter(function (o) { return o.AcceptsMovies; }),
@@ -734,6 +766,7 @@
                     // page load plus one Save switches the plugin off. Keeping the configured name
                     // as the sole option makes Save a no-op instead. Resolves rather than rethrows,
                     // so the chain still reaches hideLoadingMsg.
+                    fillYouTubeLibraries([]);
                     movies.innerHTML = '';
                     selectOnly(movies, config.MoviesLibraryName || 'VOD', ' (library list unavailable)');
                     series.innerHTML = '';
@@ -776,8 +809,8 @@
                                 (config.PreferredAudioLanguages || []).join(', ');
                             document.querySelector('#preferredSubtitleLanguages').value =
                                 (config.PreferredSubtitleLanguages || []).join(', ');
-                            document.querySelector('#youTubeChannelLibraryName').value = config.YouTubeChannelLibraryName || '';
                             document.querySelector('#youTubeExcludedPlaylistIds').value = config.YouTubeExcludedPlaylistIds || '';
+                            document.getElementById('enableYouTubePlaybackReporting').checked = config.EnableYouTubePlaybackReporting !== false;
                             document.querySelector('#enablePlaybackDiagnostics').checked = config.EnablePlaybackDiagnostics === true;
                             document.querySelector('#enableAutomaticEnglishCaptions').checked =
                                 config.EnableAutomaticEnglishCaptions !== false;
@@ -885,6 +918,7 @@
                                 .split(',').map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; });
                             config.YouTubeChannelLibraryName = document.querySelector('#youTubeChannelLibraryName').value.trim();
                             config.YouTubeExcludedPlaylistIds = document.querySelector('#youTubeExcludedPlaylistIds').value.trim();
+                            config.EnableYouTubePlaybackReporting = document.getElementById('enableYouTubePlaybackReporting').checked;
                             config.EnablePlaybackDiagnostics = document.querySelector('#enablePlaybackDiagnostics').checked;
                             config.EnableAutomaticEnglishCaptions =
                                 document.querySelector('#enableAutomaticEnglishCaptions').checked;

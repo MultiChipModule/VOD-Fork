@@ -90,6 +90,32 @@ namespace Jellyfin.Plugin.VOD.Tests.Services.Sync
         }
 
         [Fact]
+        public async Task CatalogUsesBatchMetadataToRecognizeArchivedBroadcasts()
+        {
+            var config = MakeConfig();
+            var flat = Substitute.For<IYtDlpService>();
+            using var http = new HttpClient(new Handler(request =>
+            {
+                var query = QueryHelpers.ParseQuery(request.RequestUri!.Query);
+                Assert.Contains("liveStreamingDetails", query["part"].ToString(), StringComparison.Ordinal);
+                Assert.Equal("v0000000000,v0000000001", query["id"].ToString());
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""
+                        {"items":[
+                         {"id":"v0000000000","snippet":{"title":"Replay","liveBroadcastContent":"none"},"liveStreamingDetails":{"actualEndTime":"2026-11-25T00:00:00Z"}},
+                         {"id":"v0000000001","snippet":{"title":"Short ordinary upload"},"contentDetails":{"duration":"PT25S"}}]}
+                        """)
+                };
+            }));
+            using var service = new YouTubeMetadataService(flat, () => config, http, _clock);
+            var excluded = await service.GetCatalogBroadcastsAsync(["v0000000000", "v0000000001"], default);
+            Assert.Equal("v0000000000", Assert.Single(excluded!));
+            Assert.Equal(1, service.Status().ApiUnitsUsed);
+            Assert.Empty(flat.ReceivedCalls());
+        }
+
+        [Fact]
         public async Task KnownChannelHeadersAreBatchedBeforeImport()
         {
             const string other = "UCB123456789012345678901";

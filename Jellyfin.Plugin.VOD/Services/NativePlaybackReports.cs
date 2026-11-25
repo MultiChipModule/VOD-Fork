@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Collections.Generic;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.Session;
@@ -13,7 +14,7 @@ namespace Jellyfin.Plugin.VOD.Services
         internal static bool Normalize(PlaybackProgressInfo report, Func<Guid, Video?> visible, Func<string, bool> isYouTube)
         {
             var ids = Resolve(report.ItemId, report.MediaSourceId, visible, isYouTube);
-            if (ids is not { } resolved)
+            if (ids is not { } resolved || (resolved.Primary == report.ItemId && report.Item is null))
             {
                 return false;
             }
@@ -27,7 +28,7 @@ namespace Jellyfin.Plugin.VOD.Services
         internal static bool Normalize(PlaybackStopInfo report, Func<Guid, Video?> visible, Func<string, bool> isYouTube)
         {
             var ids = Resolve(report.ItemId, report.MediaSourceId, visible, isYouTube);
-            if (ids is not { } resolved)
+            if (ids is not { } resolved || (resolved.Primary == report.ItemId && report.Item is null))
             {
                 return false;
             }
@@ -38,12 +39,35 @@ namespace Jellyfin.Plugin.VOD.Services
             return true;
         }
 
-        private static (Guid Primary, string Source)? Resolve(Guid itemId, string? sourceId,
+        internal static void NormalizeRouteArguments(IDictionary<string, object?> arguments, Guid userId,
+            Func<Guid, string?, (Guid Primary, string Source)?> resolve)
+        {
+            if (!arguments.TryGetValue("itemId", out var itemId) || itemId is not Guid item
+                || (arguments.TryGetValue("userId", out var requested) && requested is Guid selected && selected != userId))
+                return;
+
+            arguments.TryGetValue("mediaSourceId", out var mediaSource);
+            if (resolve(item, mediaSource as string) is { } ids && ids.Primary != item)
+            {
+                arguments["itemId"] = ids.Primary;
+                arguments["mediaSourceId"] = ids.Source;
+            }
+        }
+
+        internal static (Guid Primary, string Source)? Resolve(Guid itemId, string? sourceId,
             Func<Guid, Video?> visible, Func<string, bool> isYouTube)
         {
-            if (visible(itemId) is not { PrimaryVersionId: { } primaryId } item
-                || primaryId == itemId || item.GetProviderId("VOD") is not { Length: > 0 } vodId
-                || !isYouTube(vodId) || visible(primaryId) is not { } primary
+            if (itemId == Guid.Empty && !Guid.TryParse(sourceId, out itemId))
+                return null;
+
+            if (visible(itemId) is not { } item
+                || item.GetProviderId("VOD") is not { Length: > 0 } vodId || !isYouTube(vodId))
+            {
+                return null;
+            }
+
+            var primaryId = item.PrimaryVersionId ?? item.Id;
+            if (visible(primaryId) is not { } primary || primary.PrimaryVersionId.HasValue
                 || !string.Equals(primary.GetProviderId("VOD"), vodId, StringComparison.Ordinal))
             {
                 return null;

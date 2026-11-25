@@ -9,10 +9,12 @@ using System.Threading.Tasks;
 using Jellyfin.Plugin.VOD.Configuration;
 using Jellyfin.Plugin.VOD.Data;
 using Jellyfin.Plugin.VOD.Data.Models;
+using Jellyfin.Plugin.VOD.Services.Sync;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Controller.Persistence;
+using MediaBrowser.Controller.Playlists;
 using MediaBrowser.Model.Dlna;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.MediaInfo;
@@ -310,6 +312,12 @@ namespace Jellyfin.Plugin.VOD.Services
             stream.Type == MediaStreamType.Subtitle && stream.Language is { } language
             && YouTubeCaption.IsEnglish(language);
 
+        internal (Guid Primary, string Source)? ResolveNativeReport(Guid itemId, string? source, Guid userId)
+            => users.GetUserById(userId) is { } user
+                ? NativePlaybackReports.Resolve(itemId, source, id => library.GetItemById<BaseItem>(id, user) as Video,
+                    id => database.GetVideoByUuid(id) is { } row && YouTubeCaption.IsYouTubePage(row.VideoUrl))
+                : null;
+
         internal bool NormalizeNativeReport(object payload, Guid userId)
         {
             if (users.GetUserById(userId) is not { } user)
@@ -365,6 +373,21 @@ namespace Jellyfin.Plugin.VOD.Services
                 && item.GetProviderId("VOD") is { Length: > 0 } vodId
                 && database.GetVideoByUuid(vodId) is { } video
                 && YouTubeCaption.IsYouTubePage(video.VideoUrl);
+        }
+
+        internal bool? CanReadCatalogPlaylist(Guid playlistId, Guid userId)
+        {
+            if (library.GetItemById(playlistId) is not Playlist playlist
+                || playlist.GetProviderId(LibraryPublisher.ChannelCatalogProvider) is null)
+                return null;
+
+            if (users.GetUserById(userId) is not { } user || !playlist.IsVisibleStandalone(user))
+                return false;
+
+            // Jellyfin's ordered playlist endpoint uses IsVisible rather than library access
+            // for its linked children. Match the library checks used by folder browsing.
+            return playlist.LinkedChildren.All(link => link.ItemId is not { } id
+                || library.GetItemById(id) is not { } linked || linked.IsVisibleStandalone(user));
         }
 
         internal bool IsManagedSubtitle(Guid mediaSourceId, int index) =>
@@ -468,7 +491,8 @@ namespace Jellyfin.Plugin.VOD.Services
 
                     return;
                 }
-                else if (authenticated && controller == "Jellyfin.Api.Controllers.PlaystateController")
+                else if (authenticated && config.EnableYouTubePlaybackReporting
+                    && controller == "Jellyfin.Api.Controllers.PlaystateController")
                 {
                     ObserveNativeReport(context, action.ActionName, userId, config.EnablePlaybackDiagnostics);
                 }
@@ -502,6 +526,14 @@ namespace Jellyfin.Plugin.VOD.Services
                         http.Request.Method, action.ActionName, nativeItemId,
                         context.ActionArguments.TryGetValue("static", out var useStatic) && useStatic is true,
                         http.Request.Headers.ContainsKey("Range"), status);
+                    return;
+                }
+                else if (controller == "Jellyfin.Api.Controllers.PlaylistsController"
+                    && action.ActionName is ("GetPlaylist" or "GetPlaylistItems")
+                    && context.ActionArguments.TryGetValue("playlistId", out var playlist) && playlist is Guid playlistId
+                    && http.RequestServices.GetRequiredService<CaptionPlaybackFilter>().CanReadCatalogPlaylist(playlistId, userId) == false)
+                {
+                    context.Result = new NotFoundResult();
                     return;
                 }
                 else if (controller == "Jellyfin.Api.Controllers.SubtitleController"
@@ -591,6 +623,24 @@ namespace Jellyfin.Plugin.VOD.Services
 
         private static void ObserveNativeReport(ActionExecutingContext context, string action, Guid userId, bool diagnostics)
         {
+            if (action is "OnPlaybackStart" or "OnPlaybackProgress" or "OnPlaybackStopped"
+                or "OnPlaybackStartLegacy" or "OnPlaybackProgressLegacy" or "OnPlaybackStoppedLegacy")
+            {
+                try
+                {
+                    NormalizeRouteReport(context, userId);
+                }
+#pragma warning disable CA1031 // An unavailable lookup must leave the native action usable.
+                catch (Exception ex) when (ex is not OperationCanceledException)
+#pragma warning restore CA1031
+                {
+                    if (diagnostics)
+                        LogSelectionUnavailable(context.HttpContext.RequestServices.GetRequiredService<ILogger<CaptionPlaybackDispatch>>(), ex.GetType().Name);
+                }
+
+                return;
+            }
+
             var argument = action switch
             {
                 "ReportPlaybackStart" => "playbackStartInfo",
@@ -629,6 +679,13 @@ namespace Jellyfin.Plugin.VOD.Services
                     LogSelectionUnavailable(services.GetRequiredService<ILogger<CaptionPlaybackDispatch>>(), ex.GetType().Name);
                 }
             }
+        }
+
+        private static void NormalizeRouteReport(ActionExecutingContext context, Guid userId)
+        {
+            var captions = context.HttpContext.RequestServices.GetRequiredService<CaptionPlaybackFilter>();
+            NativePlaybackReports.NormalizeRouteArguments(context.ActionArguments, userId,
+                (id, source) => captions.ResolveNativeReport(id, source, userId));
         }
 
         [LoggerMessage(EventId = 9, Level = LogLevel.Information,

@@ -301,7 +301,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             var partial = !direct && (listing.Entries.Count >= limit || listing.PlaylistCount > listing.Entries.Count);
             var result = listing with { IsPartial = partial };
             Put(cacheKey, result, SourceTypeDetector.Detect(url) == SourceType.YoutubePlaylist
-                || new Uri(url).AbsolutePath.TrimEnd('/').EndsWith("/playlists", StringComparison.Ordinal)
+                || new Uri(url).AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() is "playlists" or "shorts" or "streams"
                     ? PlaylistLifetime(config) : TimeSpan.FromMinutes(15));
             return result;
         }
@@ -463,6 +463,25 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
                 listing.Partial || invalidEntry);
         }
 
+        internal async Task<IReadOnlySet<string>?> GetCatalogBroadcastsAsync(IEnumerable<string> ids, CancellationToken token)
+        {
+            await _requests.WaitAsync(token).ConfigureAwait(false);
+            try
+            {
+                var config = _configuration();
+                var key = _apiKeys.Read(config?.YouTubeApiKeyFile, out _);
+                if (key is null)
+                    return null;
+
+                var metadata = await VideoDetailsAsync(new ApiRequest(key, config, false), ids, token).ConfigureAwait(false);
+                return metadata?.Values.Where(entry => entry.IsBroadcast).Select(entry => entry.Id).ToHashSet(StringComparer.Ordinal);
+            }
+            finally
+            {
+                _requests.Release();
+            }
+        }
+
         private async Task<Dictionary<string, PlaylistEntry>?> VideoDetailsAsync(ApiRequest api, IEnumerable<string> ids, CancellationToken token)
         {
             var result = new Dictionary<string, PlaylistEntry>(StringComparer.Ordinal);
@@ -476,7 +495,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             }
             foreach (var batch in missing.Order(StringComparer.Ordinal).Chunk(50))
             {
-                var payload = await ApiAsync(api, "videos", token, ("part", "snippet,contentDetails"),
+                var payload = await ApiAsync(api, "videos", token, ("part", "snippet,contentDetails,liveStreamingDetails"),
                     ("id", string.Join(',', batch))).ConfigureAwait(false);
                 if (payload is null)
                     return null;
@@ -487,7 +506,8 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
                         continue;
                     var snippet = Property(item, "snippet");
                     var entry = Entry(id!, snippet, ParseDate(Text(snippet, "publishedAt")),
-                        ReadDuration(Text(Property(item, "contentDetails"), "duration")));
+                        ReadDuration(Text(Property(item, "contentDetails"), "duration")),
+                        isBroadcast: Property(item, "liveStreamingDetails").ValueKind == JsonValueKind.Object);
                     result[id!] = entry;
                     Put("video:" + id, entry, PlaylistLifetime(api.Config));
                 }
@@ -528,7 +548,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
         private static string ApiFields(string endpoint) => endpoint switch
         {
             "channels" => "items(id,snippet(title,description,thumbnails),contentDetails(relatedPlaylists(uploads)),brandingSettings(image(bannerExternalUrl)))",
-            "videos" => "items(id,snippet(title,description,channelId,publishedAt,liveBroadcastContent,thumbnails),contentDetails(duration))",
+            "videos" => "items(id,snippet(title,description,channelId,publishedAt,liveBroadcastContent,thumbnails),contentDetails(duration),liveStreamingDetails(actualStartTime,actualEndTime,scheduledStartTime))",
             "playlists" => "nextPageToken,pageInfo(totalResults),items(id,snippet(title,description,channelId,channelTitle,thumbnails))",
             _ => "nextPageToken,pageInfo(totalResults),items(snippet(title,description,thumbnails,videoOwnerChannelId,resourceId(videoId)),contentDetails(videoId,videoPublishedAt))"
         };
@@ -685,12 +705,13 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             };
         }
 
-        private static PlaylistEntry Entry(string id, JsonElement snippet, DateTimeOffset? published, double? duration = null, bool fromPlaylist = false)
+        private static PlaylistEntry Entry(string id, JsonElement snippet, DateTimeOffset? published, double? duration = null, bool fromPlaylist = false, bool isBroadcast = false)
             => new()
             {
                 Id = id, VideoUrl = WatchUrl(id), IeKey = "Youtube", Title = Text(snippet, "title"),
                 Description = Text(snippet, "description"), ThumbnailUrl = Thumbnail(snippet), PublishedAt = published, Duration = duration,
                 ChannelId = Text(snippet, fromPlaylist ? "videoOwnerChannelId" : "channelId"),
+                IsBroadcast = isBroadcast || Text(snippet, "liveBroadcastContent") is "live" or "upcoming",
                 LiveStatus = Text(snippet, "liveBroadcastContent") switch
                 {
                     "live" => LiveStatus.Live, "upcoming" => LiveStatus.Upcoming, _ => LiveStatus.NotLive

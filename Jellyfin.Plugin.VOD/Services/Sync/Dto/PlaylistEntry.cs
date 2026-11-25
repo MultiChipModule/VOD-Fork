@@ -35,6 +35,9 @@ namespace Jellyfin.Plugin.VOD.Services.Sync.Dto
         /// <summary>Gets the upload date when supplied by the flat listing.</summary>
         public DateOnly? UploadDate { get; init; }
 
+        /// <summary>Whether the API identifies this video as a broadcast, including archived livestreams.</summary>
+        public bool IsBroadcast { get; init; }
+
         /// <summary>Whether this entry is broadcasting now, scheduled, or neither.</summary>
         public LiveStatus LiveStatus { get; init; }
     }

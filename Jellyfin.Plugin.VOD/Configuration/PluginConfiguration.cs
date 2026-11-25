@@ -123,6 +123,9 @@ namespace Jellyfin.Plugin.VOD.Configuration
         /// <summary>Gets or sets whether sanitized YouTube playback negotiation is logged.</summary>
         public bool EnablePlaybackDiagnostics { get; set; }
 
+        /// <summary>Normalize YouTube item identities for native sessions and reporting consumers.</summary>
+        public bool EnableYouTubePlaybackReporting { get; set; } = true;
+
         /// <summary>Gets or sets whether to offer YouTube's automatically generated English captions.</summary>
         public bool EnableAutomaticEnglishCaptions { get; set; } = true;
 

@@ -68,6 +68,31 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
             Assert.Equal(_alternate.Id, alternate.ItemId);
         }
 
+        [Fact]
+        public void RehydratesAnOutdatedNestedDtoEvenWhenTheTopLevelItemIsCanonical()
+        {
+            var report = new PlaybackProgressInfo
+            {
+                ItemId = _primary.Id, MediaSourceId = _alternate.Id.ToString("N"),
+                Item = new BaseItemDto { Id = _alternate.Id }, IsPaused = true, PositionTicks = 234
+            };
+            Assert.True(NativePlaybackReports.Normalize(report, Visible, IsYouTube));
+            Assert.Equal(_primary.Id, report.ItemId);
+            Assert.Equal(_alternate.Id.ToString("N"), report.MediaSourceId);
+            Assert.Null(report.Item);
+            Assert.True(report.IsPaused);
+            Assert.Equal(234, report.PositionTicks);
+        }
+
+        [Fact]
+        public void CanResolveASourceOnlyReportWithoutInventingAnItem()
+        {
+            var report = new PlaybackStartInfo { MediaSourceId = _alternate.Id.ToString("N") };
+            Assert.True(NativePlaybackReports.Normalize(report, Visible, IsYouTube));
+            Assert.Equal(_primary.Id, report.ItemId);
+            Assert.Equal(_alternate.Id.ToString("N"), report.MediaSourceId);
+        }
+
         private Video? Visible(Guid id) => id == _primary.Id ? _primary : id == _alternate.Id ? _alternate : null;
 
         private static bool IsYouTube(string id) => id == ProviderId;
