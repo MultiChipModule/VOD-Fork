@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "5.2.3.0",
+                "changelog": "Present automatic YouTube captions on one line per cue.",
+                "targetAbi": "12.1.0.0",
+                "timestamp": "2026-11-25T00:22:15Z",
+                "sourceUrl": "https://github.com/MultiChipModule/VOD-Fork/releases/download/v5.2.3.0/vod-fork_5.2.3.0.zip",
+                "checksum": "ec84cd898bd6e850d0b84eebffadad43"
+            },
+            {
                 "version": "5.2.2.0",
                 "changelog": "Accept both Netscape session cookie expiry conventions and verify native cooldown and shared rendition behavior.",
                 "targetAbi": "12.1.0.0",
