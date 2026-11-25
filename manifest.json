@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "5.3.0.0",
+                "changelog": "Use YouTube Data API v3 and RSS for metadata-first synchronization, with quota tracking and manual import reserve.",
+                "targetAbi": "12.1.0.0",
+                "timestamp": "2026-11-25T00:31:50Z",
+                "sourceUrl": "https://github.com/MultiChipModule/VOD-Fork/releases/download/v5.3.0.0/vod-fork_5.3.0.0.zip",
+                "checksum": "cb9be8516540188d7a4f8d3767be7128"
+            },
+            {
                 "version": "5.2.3.0",
                 "changelog": "Present automatic YouTube captions on one line per cue.",
                 "targetAbi": "12.1.0.0",
