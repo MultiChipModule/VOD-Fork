@@ -210,8 +210,7 @@ namespace Jellyfin.Plugin.VOD.Services
                     var host = domain.TrimStart('.');
                     if ((!string.Equals(host, "youtube.com", StringComparison.OrdinalIgnoreCase)
                         && !string.Equals(host, "www.youtube.com", StringComparison.OrdinalIgnoreCase))
-                        || !long.TryParse(values[4], NumberStyles.None, CultureInfo.InvariantCulture, out var expiry)
-                        || (expiry != 0 && expiry <= now))
+                        || !IsCurrentCookie(values[4], now))
                         continue;
 
                     login |= values[5] == "LOGIN_INFO";
@@ -227,6 +226,11 @@ namespace Jellyfin.Plugin.VOD.Services
 
             return false;
         }
+
+        // Both an empty expiry and zero represent a browser-session cookie in yt-dlp.
+        private static bool IsCurrentCookie(string expiry, long now) =>
+            expiry.Length == 0 || (long.TryParse(expiry, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds)
+                && (seconds == 0 || seconds > now));
 
         private static void CopyPrivate(string seed, string destination)
         {

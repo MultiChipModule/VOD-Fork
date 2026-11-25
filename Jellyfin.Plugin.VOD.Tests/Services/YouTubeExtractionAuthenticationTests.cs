@@ -65,15 +65,17 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
             Assert.Contains("Export fresh cookies", yt.Service.LastYouTubeError);
         }
 
-        [Fact]
-        public async Task RotatedCookieWarningDiscardsEvenAPlayableExitZeroResult()
+        [Theory]
+        [InlineData("0")]
+        [InlineData("")]
+        public async Task RotatedCookieWarningDiscardsEvenAPlayableExitZeroResult(string sessionExpiry)
         {
             if (OperatingSystem.IsWindows())
                 return;
             using var yt = new MockYouTubeExtractor("""
                 printf '%s\n' 'WARNING: The provided YouTube account cookies are no longer valid. secret-debug-text' >&2
                 """ + "\n" + MockYouTubeExtractor.HlsOutput);
-            yt.ConfigureCookies(SignedInCookies);
+            yt.ConfigureCookies(SignedInCookies.Replace("\t0\t", "\t" + sessionExpiry + "\t", StringComparison.Ordinal));
 
             Assert.Null(await yt.Service.ResolveAsync(Video, StreamCacheKey.DefaultFormat, CancellationToken.None));
             Assert.Null(yt.Service.TryGetCachedYouTubeResolution(Video, StreamCacheKey.DefaultFormat));

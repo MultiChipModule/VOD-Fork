@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net;
 using System.Net.Http;
 using System.Reflection;
 using System.Security.Claims;
@@ -37,8 +38,10 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
         private const string Page = "https://www.youtube.com/watch?v=SLe8Ot4XTiM";
         private const string LocalStream = "http://localhost:8096/VOD/stream/test.m3u8";
 
-        [Fact]
-        public async Task FirstChallengeAndRepeatedNativeRetriesNeverReachJellyfinOrTheMediaProbe()
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task FirstChallengeAndRepeatedNativeRetriesNeverReachJellyfinOrTheMediaProbe(bool startsWithNativeStream)
         {
             if (OperatingSystem.IsWindows())
                 return;
@@ -47,6 +50,11 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
                 exit 1
                 """);
             using var fixture = new PlaybackFixture(yt, registeredLayout: false);
+            if (startsWithNativeStream)
+            {
+                var initial = await fixture.Dispatch("VideosController", "GetVideoStream");
+                Assert.Equal(StatusCodes.Status503ServiceUnavailable, Assert.IsType<ObjectResult>(initial.Result).StatusCode);
+            }
 
             for (var i = 0; i < 10; i++)
             {
@@ -142,6 +150,52 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
             Assert.NotNull(await yt.Service.ResolveAsync("https://youtu.be/SLe8Ot4XTiM", StreamCacheKey.DefaultFormat, CancellationToken.None));
             Assert.Equal(2, fixture.NativeInvocations);
             Assert.Single(File.ReadAllLines(yt.ArgumentsPath));
+        }
+
+        [Fact]
+        public async Task MissingAlternateDoesNotEvictTheSharedMasterOrTriggerAnotherExtraction()
+        {
+            if (OperatingSystem.IsWindows())
+                return;
+            using var yt = new MockYouTubeExtractor(MockYouTubeExtractor.HlsOutput);
+            var db = Substitute.For<IVodDatabase>();
+            db.GetVideoByUuid("test").Returns(new VideoRecord { Id = "test", VideoUrl = Page });
+            var clients = Substitute.For<IHttpClientFactory>();
+            using var handler = new MasterHandler();
+            clients.CreateClient(Arg.Any<string>()).Returns(_ => new HttpClient(handler, disposeHandler: false));
+            var cache = new PlaylistCache();
+            var library = Substitute.For<ILibraryManager>();
+            var writer = new MediaStreamWriter(library, Substitute.For<IMediaStreamRepository>(),
+                NullLogger<MediaStreamWriter>.Instance);
+            var controller = new VodController(db, yt.Service, cache, new SubtitleTokens(cache), writer, null!,
+                clients, library, null!, NullLogger<VodController>.Instance);
+
+            var omitted = await controller.GetStream("test", height: 480, codec: "h264");
+            Assert.Equal(StatusCodes.Status503ServiceUnavailable, Assert.IsType<ObjectResult>(omitted).StatusCode);
+            var alternate = Assert.IsType<ContentResult>(await controller.GetStream("test", height: 720, codec: "h264"));
+            var original = Assert.IsType<ContentResult>(await controller.GetStream("test"));
+            Assert.Contains("720.m3u8", alternate.Content, StringComparison.Ordinal);
+            Assert.Contains("720.m3u8", original.Content, StringComparison.Ordinal);
+            Assert.Equal(1, handler.Calls);
+            Assert.Single(File.ReadAllLines(yt.ArgumentsPath));
+        }
+
+        private sealed class MasterHandler : HttpMessageHandler
+        {
+            internal int Calls { get; private set; }
+
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            {
+                Calls++;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""
+                        #EXTM3U
+                        #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,CODECS="avc1.64001f,mp4a.40.2"
+                        720.m3u8
+                        """)
+                });
+            }
         }
 
         private sealed class PlaybackFixture : IDisposable

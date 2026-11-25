@@ -12,4 +12,4 @@ category: "General"
 artifacts:
   - "Jellyfin.Plugin.VOD.dll"
 changelog: |-
-  - Stop playback retry storms during YouTube cooldowns, enforce configured extraction authentication, and reuse playback resolutions.
+  - Accept both Netscape session cookie expiry conventions and verify native cooldown and shared rendition behavior.

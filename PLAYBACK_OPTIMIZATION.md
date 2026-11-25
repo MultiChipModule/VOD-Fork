@@ -12,7 +12,7 @@ There is no new playback preference setting. Automatic selection uses the balanc
 
 ## Resolution caching
 
-The cache keeps up to 64 successful YouTube resolutions in memory for up to five minutes. Known signed URL expiry shortens that interval by a safety margin. A failed master request invalidates the resolution for the next request. Requests for the same video and format share one successful extraction. Different videos and selectors are isolated and up to four YouTube extractions can run at once. Authenticated yt-dlp may serialize access to its working cookie file. Cancellation releases the extraction slot and a remaining caller may retry.
+The in-memory cache keeps up to 64 YouTube resolution results. Successful resolutions last up to five minutes, with a safety margin before the signed URL expires. Failed resolutions are reused for 15 seconds. Requests for the same video and format share one extraction, including different YouTube URL forms and quality tiers using the same master. A failed master fetch invalidates the resolution, while a missing tier leaves the shared master available to other tiers. Extraction pacing and cooldowns are documented in the [YouTube extraction guide](YOUTUBE_EXTRACTION.md).
 
 The update adds no temporary media store. Existing probe serialization, native Jellyfin FFmpeg limits, and subtitle cache limits remain in effect. Native Jellyfin controls any remux or transcode processes.
 

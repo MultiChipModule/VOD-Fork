@@ -1,5 +1,10 @@
 # Changelog
 
+## 5.2.2.0
+
+- Accept both empty and zero expiry fields in Netscape session cookies.
+- Extend regression coverage for direct native startup during cooldown and shared HLS manifests across quality variants.
+
 ## 5.2.1.0
 
 - Stop playback negotiation and media startup when a YouTube cooldown blocks the source. Return native Jellyfin playback errors and retry headers.
