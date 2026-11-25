@@ -1,5 +1,9 @@
 # Changelog
 
+## 5.2.3.0
+
+- Present each automatic YouTube caption cue on a single line while preserving cue times and creator subtitle formatting.
+
 ## 5.2.2.0
 
 - Accept both empty and zero expiry fields in Netscape session cookies.

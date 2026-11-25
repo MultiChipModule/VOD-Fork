@@ -78,7 +78,7 @@ namespace Jellyfin.Plugin.VOD.Services
                 return null;
             }
 
-            return Store(videoKey, caption.Kind, CaptionNormalization.PlainWebVtt(text), config);
+            return Store(videoKey, caption.Kind, CaptionNormalization.PlainWebVtt(text, singleLine: caption.Kind != CaptionKind.Creator), config);
         }
 
         internal static bool IsWebVtt(string text) =>
@@ -117,7 +117,8 @@ namespace Jellyfin.Plugin.VOD.Services
         private string PathFor(string videoKey, CaptionKind kind)
         {
             var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(videoKey)));
-            return Path.Combine(DirectoryPath, string.Create(CultureInfo.InvariantCulture, $"{hash}-{kind}-plain.vtt"));
+            var variant = kind == CaptionKind.Creator ? "plain" : "single-line";
+            return Path.Combine(DirectoryPath, string.Create(CultureInfo.InvariantCulture, $"{hash}-{kind}-{variant}.vtt"));
         }
 
         private void Prune(string keep, PluginConfiguration config)

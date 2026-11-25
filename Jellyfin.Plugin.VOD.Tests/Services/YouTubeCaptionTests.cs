@@ -208,6 +208,25 @@ namespace Jellyfin.Plugin.VOD.Tests.Services
         }
 
         [Fact]
+        public void AutomaticCueIsOneLineAndItsTimingAndNeighborsStayIntact()
+        {
+            const string input = """
+                WEBVTT
+
+                one
+                00:00:01.000 --> 00:00:02.000 position:20%
+                <c.green>Hi &amp; welcome</c>
+                <00:00:01.500><i>a second line</i><BR />and a third
+
+                00:00:02.000 --> 00:00:03.000
+                Next cue
+                """;
+            var automatic = CaptionNormalization.PlainWebVtt(input, singleLine: true);
+            Assert.Equal("WEBVTT\n\none\n00:00:01.000 --> 00:00:02.000\nHi &amp; welcome a second line and a third\n\n00:00:02.000 --> 00:00:03.000\nNext cue\n", automatic);
+            Assert.Contains("welcome\n<00:00:01.500>", CaptionNormalization.PlainWebVtt(input), StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void SubtitleAuthorizationUsesTheNativeQueryOverride()
         {
             var item = Guid.NewGuid();
