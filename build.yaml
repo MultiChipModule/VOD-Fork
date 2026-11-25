@@ -12,4 +12,4 @@ category: "General"
 artifacts:
   - "Jellyfin.Plugin.VOD.dll"
 changelog: |-
-  - Use YouTube Data API v3 and RSS for metadata-first synchronization, with quota tracking and manual import reserve.
+  - Configure the YouTube Data API key through a password field with protected server-side storage.

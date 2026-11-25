@@ -9,9 +9,13 @@ The first playback resolves the media, probes it for Jellyfin negotiation, and f
 ## Configure a Data API key
 
 1. In Google Cloud, create or select a project, enable **YouTube Data API v3**, and create an API key. Restrict the key to that API. Apply an IP restriction if your Jellyfin server has a stable outbound IP.
-2. Store only the key in a private text file. Set the Jellyfin service account as the owner and set owner-only permissions, for example `chmod 600 youtube-api-key.txt`. Mount its parent directory read-only inside the Jellyfin container. Keep the key out of plugin XML, repositories and unprotected backups.
-3. Open **Dashboard → Plugins → VOD → YouTube metadata**, enter the absolute container path such as `/config/private/youtube-api-key.txt`, and save. The dashboard reports whether the key file is readable. The first API request reports API or project errors there.
-4. To import a saved, enabled source immediately, open its **Detail** panel and select **Import now**. The default local budget is 10,000 units per Pacific day, with 1,000 reserved for explicit imports. Match the local budget to the project's actual allowance. Only VOD-Fork's requests count in its dashboard, and Google also counts other callers sharing the project.
+2. Open **Dashboard → Plugins → VOD → YouTube metadata**. Paste the key into **YouTube Data API key** and select **Save API key**. The field empties and the status shows a fixed mask. The next API request checks whether Google accepts the key.
+3. To replace the key, paste the new value and select **Save API key** again. Select **Clear API key** to return to RSS, oEmbed, and bounded flat listings.
+4. To import a saved, enabled source immediately, open its **Detail** panel and select **Import now**. The default local budget is 10,000 units per Pacific day, with 1,000 reserved for explicit imports. Match the local budget to the project's actual allowance. The dashboard counts VOD-Fork's requests, and Google also counts other callers sharing the project.
+
+The dashboard saves the encrypted key and its ASP.NET Core Data Protection key ring in Jellyfin's private plugin data directory. Keep that directory on a persistent volume and protect both files and backups. Use HTTPS when opening the dashboard remotely.
+
+Existing key file configurations continue to work and show a **legacy file** status. To migrate, paste the key into the dashboard and save. Saving or clearing takes precedence over the old path. The original file remains available for rollback.
 
 The API key is for public library metadata. The dedicated YouTube cookie file and JavaScript runtime remain the playback settings. A future per-user Google OAuth flow will have its own credentials and consent.
 
@@ -31,4 +35,4 @@ A bot challenge or HTTP 429 suspends new YouTube extractions for one hour by def
 
 ## Install and roll back
 
-Use the [VOD-Fork catalog](https://raw.githubusercontent.com/MultiChipModule/VOD-Fork/refs/heads/main/manifest.json) under **Dashboard → Plugins → Repositories**. Install VOD-Fork 5.3.0.0 and restart Jellyfin. To roll back, stop Jellyfin and replace the installed version with 5.2.3.0 from the same catalog or the [previous release ZIP](https://github.com/MultiChipModule/VOD-Fork/releases/tag/v5.2.3.0). Keep the existing plugin data and Jellyfin user data when changing versions. Follow the backup and manual replacement steps in [PHASE1_INSTALL.md](PHASE1_INSTALL.md).
+Use the [VOD-Fork catalog](https://raw.githubusercontent.com/MultiChipModule/VOD-Fork/refs/heads/main/manifest.json) under **Dashboard → Plugins → Repositories**. Install VOD-Fork 5.3.1.0 and restart Jellyfin. To roll back, stop Jellyfin and replace the installed version with 5.3.0.0 from the same catalog or the [previous release ZIP](https://github.com/MultiChipModule/VOD-Fork/releases/tag/v5.3.0.0). Keep the existing plugin data and Jellyfin user data when changing versions. Version 5.3.0.0 reads the legacy file setting, so it needs a valid file path for Data API access. Follow the backup and manual replacement steps in [PHASE1_INSTALL.md](PHASE1_INSTALL.md).

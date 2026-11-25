@@ -1,5 +1,9 @@
 # Changelog
 
+## 5.3.1.0
+
+- Save, replace, or clear the YouTube Data API key from a masked dashboard input with protected storage and support for legacy key files.
+
 ## 5.3.0.0
 
 - Import YouTube metadata with the Data API v3, conditional RSS feeds, and bounded public metadata fallbacks.

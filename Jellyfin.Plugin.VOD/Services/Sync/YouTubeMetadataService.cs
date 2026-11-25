@@ -39,6 +39,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
         private readonly HttpClient _http;
         private readonly TimeProvider _clock;
         private readonly YouTubeMetadataQuota _quota;
+        private readonly YouTubeApiKeyStore _apiKeys;
         private readonly MemoryCache _cache = new(new MemoryCacheOptions { SizeLimit = 1024 });
         private readonly SemaphoreSlim _requests = new(1);
         private readonly Func<string?> _stateFolder;
@@ -63,6 +64,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             _http = http;
             _clock = clock;
             _stateFolder = stateFolder ?? (() => null);
+            _apiKeys = new YouTubeApiKeyStore(_stateFolder);
             _quota = new YouTubeMetadataQuota(clock, () => _stateFolder() is { } path ? Path.Combine(path, "youtube-api-quota.json") : null);
         }
 
@@ -72,12 +74,19 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
             var state = _quota.Read();
             var budget = Budget(config);
             var reserve = Reserve(config);
-            var keyPath = config?.YouTubeApiKeyFile;
-            var status = string.IsNullOrWhiteSpace(keyPath) ? "No API key configured"
-                : ReadKey(keyPath) is not null ? "API key file readable" : "API key file unusable";
+            _apiKeys.Read(config?.YouTubeApiKeyFile, out var status);
             return new(status, state.Day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), state.Used, budget, reserve,
                 Math.Max(0, budget - state.Used - reserve), state.UpstreamExhausted, Volatile.Read(ref _apiIssue),
                 Interlocked.Read(ref _rssRequests), Interlocked.Read(ref _flatListings), Interlocked.Read(ref _oEmbedRequests));
+        }
+
+        internal bool WriteApiKey(string? key)
+        {
+            if (!_apiKeys.TryWrite(key))
+                return false;
+
+            Volatile.Write(ref _apiIssue, null);
+            return true;
         }
 
         private static int Budget(PluginConfiguration? config) => Math.Clamp(config?.YouTubeApiDailyBudget ?? 10000, 1, 1000000);
@@ -87,7 +96,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
         internal async Task PrimeHeadersAsync(IEnumerable<string> sources, CancellationToken token)
         {
             var config = _configuration();
-            if (ReadKey(config?.YouTubeApiKeyFile) is not { } key)
+            if (_apiKeys.Read(config?.YouTubeApiKeyFile, out _) is not { } key)
                 return;
 
             await _requests.WaitAsync(token).ConfigureAwait(false);
@@ -160,9 +169,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
                 var channelPath = segments.FirstOrDefault();
                 var customTab = segments.LastOrDefault() is "shorts" or "streams" or "live";
                 var browsePlaylists = segments.LastOrDefault() == "playlists" && type == SourceType.YoutubeChannel;
-                var key = ReadKey(config?.YouTubeApiKeyFile);
-                if (key is null && !string.IsNullOrWhiteSpace(config?.YouTubeApiKeyFile))
-                    Volatile.Write(ref _apiIssue, "Check the API key file format, permissions and container path.");
+                var key = _apiKeys.Read(config?.YouTubeApiKeyFile, out _);
                 var api = key is null ? null : new ApiRequest(key, config, manual);
 
                 var alias = ChannelAlias(segments);
@@ -648,7 +655,7 @@ namespace Jellyfin.Plugin.VOD.Services.Sync
                     return null;
                 using var reader = new StreamReader(input);
                 var key = reader.ReadToEnd().Trim();
-                return IsId(key, 20, 128) ? key : null;
+                return YouTubeApiKeyStore.IsValid(key) ? key : null;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {

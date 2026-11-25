@@ -93,10 +93,13 @@
 
                     <h2>YouTube metadata</h2>
                     <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="YouTubeApiKeyFile">Optional Data API key file path</label>
-                        <input id="YouTubeApiKeyFile" type="text" is="emby-input" class="emby-input" autocomplete="off" />
-                        <div class="fieldDescription">Enter the absolute container path of an owner-only file containing the API key.
-                            Leave blank to use public feeds and limited flat listings.</div>
+                        <label class="inputLabel inputLabelUnfocused" for="youtubeApiKey">YouTube Data API key</label>
+                        <input id="youtubeApiKey" type="password" is="emby-input" class="emby-input"
+                               autocomplete="new-password" spellcheck="false" maxlength="128" />
+                        <div class="fieldDescription">Paste a key and select Save API key to configure or replace it.</div>
+                        <button id="saveYouTubeApiKey" type="button" is="emby-button" class="raised emby-button">Save API key</button>
+                        <button id="clearYouTubeApiKey" type="button" is="emby-button" class="raised emby-button">Clear API key</button>
+                        <p id="youtubeApiKeyFeedback" role="status"></p>
                     </div>
                     <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="YouTubeApiDailyBudget">Daily Data API quota budget</label>
@@ -754,7 +757,7 @@
                             document.getElementById('YouTubeExtractionIntervalSeconds').value = config.YouTubeExtractionIntervalSeconds || 10;
                             document.getElementById('YouTubeBackgroundPerHour').value = config.YouTubeBackgroundPerHour || 60;
                             document.getElementById('YouTubeRestrictionMinutes').value = config.YouTubeRestrictionMinutes || 60;
-                            document.getElementById('YouTubeApiKeyFile').value = config.YouTubeApiKeyFile || '';
+                            document.getElementById('youtubeApiKey').value = '';
                             document.getElementById('YouTubeApiDailyBudget').value = config.YouTubeApiDailyBudget ?? 10000;
                             document.getElementById('YouTubeApiImportReserve').value = config.YouTubeApiImportReserve ?? 1000;
                             document.getElementById('YouTubeRssIntervalMinutes').value = config.YouTubeRssIntervalMinutes ?? 30;
@@ -795,6 +798,46 @@
                         });
                 });
 
+            var keyInput = document.getElementById('youtubeApiKey');
+            var saveKey = document.getElementById('saveYouTubeApiKey');
+            var clearKey = document.getElementById('clearYouTubeApiKey');
+            function updateYouTubeKey(clear) {
+                if (saveKey.disabled) return;
+
+                var feedback = document.getElementById('youtubeApiKeyFeedback');
+                var key = keyInput.value.trim();
+                if (!clear && !key) {
+                    feedback.textContent = 'Paste an API key to save it.';
+                    return;
+                }
+
+                keyInput.value = '';
+                feedback.textContent = '';
+                saveKey.disabled = clearKey.disabled = true;
+                var request = { url: ApiClient.getUrl('VOD/youtube/api-key'), type: clear ? 'DELETE' : 'PUT' };
+                if (!clear) {
+                    request.contentType = 'application/json';
+                    request.data = JSON.stringify(key);
+                }
+                ApiClient.ajax(request).then(function () {
+                    feedback.textContent = clear ? 'API key cleared.' : 'API key saved.';
+                    return refreshStatus();
+                }).catch(function () {
+                    feedback.textContent = 'Could not update the API key. Check its format and Jellyfin data directory permissions.';
+                }).finally(function () {
+                    saveKey.disabled = clearKey.disabled = false;
+                });
+            }
+
+            saveKey.addEventListener('click', function () { updateYouTubeKey(false); });
+            clearKey.addEventListener('click', function () { updateYouTubeKey(true); });
+            keyInput.addEventListener('keydown', function (event) {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+                    updateYouTubeKey(false);
+                }
+            });
+
             document.getElementById('addSourceButton')
                 .addEventListener('click', function () { addSourceRow(null); });
 
@@ -813,7 +856,6 @@
                             config.YouTubeExtractionIntervalSeconds = Number(document.getElementById('YouTubeExtractionIntervalSeconds').value) || 10;
                             config.YouTubeBackgroundPerHour = Number(document.getElementById('YouTubeBackgroundPerHour').value) || 60;
                             config.YouTubeRestrictionMinutes = Number(document.getElementById('YouTubeRestrictionMinutes').value) || 60;
-                            config.YouTubeApiKeyFile = document.getElementById('YouTubeApiKeyFile').value.trim();
                             config.YouTubeApiDailyBudget = Number(document.getElementById('YouTubeApiDailyBudget').value);
                             config.YouTubeApiImportReserve = Number(document.getElementById('YouTubeApiImportReserve').value);
                             config.YouTubeRssIntervalMinutes = Number(document.getElementById('YouTubeRssIntervalMinutes').value);

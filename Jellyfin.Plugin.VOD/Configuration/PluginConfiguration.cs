@@ -28,7 +28,7 @@ namespace Jellyfin.Plugin.VOD.Configuration
         /// <summary>Gets or sets the dedicated server-side YouTube cookie file.</summary>
         public string YouTubeCookiesPath { get; set; } = string.Empty;
 
-        /// <summary>Protected server-side file containing a YouTube Data API key.</summary>
+        /// <summary>Legacy protected path used until a key is saved or cleared in the dashboard.</summary>
         public string YouTubeApiKeyFile { get; set; } = string.Empty;
 
         /// <summary>Daily Data API budget for this Jellyfin instance.</summary>

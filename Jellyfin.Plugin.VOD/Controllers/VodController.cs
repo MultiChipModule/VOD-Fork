@@ -4,6 +4,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.VOD.Configuration;
@@ -17,6 +18,7 @@ using MediaBrowser.Common.Api;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Entities;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 
@@ -540,6 +542,30 @@ namespace Jellyfin.Plugin.VOD.Controllers
                 YouTubePlaybackExtractions = _ytDlp.YouTubePlaybackExtractions
             });
         }
+
+        /// <summary>Stores or replaces the YouTube Data API key.</summary>
+        [HttpPut("youtube/api-key")]
+        [Authorize(Policy = Policies.RequiresElevation)]
+        [RequestSizeLimit(1024)]
+        [HttpLogging(HttpLoggingFields.None)]
+        public ActionResult SaveYouTubeApiKey([FromBody] JsonElement input)
+        {
+            if (input.ValueKind != JsonValueKind.String || input.GetString()?.Trim() is not { } key
+                || !YouTubeApiKeyStore.IsValid(key))
+                return BadRequest(new { error = "Enter a valid YouTube Data API key." });
+
+            return WriteYouTubeApiKey(key);
+        }
+
+        /// <summary>Clears the Data API key and disables the legacy key source.</summary>
+        [HttpDelete("youtube/api-key")]
+        [Authorize(Policy = Policies.RequiresElevation)]
+        public ActionResult ClearYouTubeApiKey()
+            => WriteYouTubeApiKey(null);
+
+        private ActionResult WriteYouTubeApiKey(string? key) => _youtubeMetadata?.WriteApiKey(key) == true
+            ? NoContent()
+            : StatusCode(503, new { error = "Could not update the API key. Check Jellyfin's plugin data directory permissions." });
 
         /// <summary>Imports an enabled configured YouTube source using the administrator quota reserve.</summary>
         [HttpPost("sources/youtube/import")]
