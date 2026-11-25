@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "5.2.1.0",
+                "changelog": "Stop playback retry storms during YouTube cooldowns, enforce configured extraction authentication, and reuse playback resolutions.",
+                "targetAbi": "12.1.0.0",
+                "timestamp": "2026-11-25T00:06:59Z",
+                "sourceUrl": "https://github.com/MultiChipModule/VOD-Fork/releases/download/v5.2.1.0/vod-fork_5.2.1.0.zip",
+                "checksum": "54db25451e83ff161192d3db6e4eda5f"
+            },
+            {
                 "version": "5.2.0.0",
                 "changelog": "Publish YouTube from lightweight listings, resolve playback on demand, and add request pacing, cooldowns and optional private cookies.",
                 "targetAbi": "12.1.0.0",
