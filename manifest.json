@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "5.2.2.0",
+                "changelog": "Accept both Netscape session cookie expiry conventions and verify native cooldown and shared rendition behavior.",
+                "targetAbi": "12.1.0.0",
+                "timestamp": "2026-11-25T00:10:07Z",
+                "sourceUrl": "https://github.com/MultiChipModule/VOD-Fork/releases/download/v5.2.2.0/vod-fork_5.2.2.0.zip",
+                "checksum": "4f738383dd08efad34f62cf30c012cde"
+            },
+            {
                 "version": "5.2.1.0",
                 "changelog": "Stop playback retry storms during YouTube cooldowns, enforce configured extraction authentication, and reuse playback resolutions.",
                 "targetAbi": "12.1.0.0",
