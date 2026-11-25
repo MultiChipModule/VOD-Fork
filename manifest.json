@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "5.3.1.0",
+                "changelog": "Configure the YouTube Data API key through a password field with protected server-side storage.",
+                "targetAbi": "12.1.0.0",
+                "timestamp": "2026-11-25T00:46:25Z",
+                "sourceUrl": "https://github.com/MultiChipModule/VOD-Fork/releases/download/v5.3.1.0/vod-fork_5.3.1.0.zip",
+                "checksum": "0519965aeee9433b67f4f2f5d54bc073"
+            },
+            {
                 "version": "5.3.0.0",
                 "changelog": "Use YouTube Data API v3 and RSS for metadata-first synchronization, with quota tracking and manual import reserve.",
                 "targetAbi": "12.1.0.0",
