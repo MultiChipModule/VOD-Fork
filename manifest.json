@@ -8,6 +8,14 @@
         "category": "General",
         "versions": [
             {
+                "version": "5.4.0.0",
+                "changelog": "Publish scan-stable native YouTube channel playlists and normalize native playback reporting for Jellystat.",
+                "targetAbi": "12.1.0.0",
+                "timestamp": "2026-11-25T01:15:59Z",
+                "sourceUrl": "https://github.com/MultiChipModule/VOD-Fork/releases/download/v5.4.0.0/vod-fork_5.4.0.0.zip",
+                "checksum": "4fef0982e3ce9f9068892f6d5109bc63"
+            },
+            {
                 "version": "5.3.1.0",
                 "changelog": "Configure the YouTube Data API key through a password field with protected server-side storage.",
                 "targetAbi": "12.1.0.0",
